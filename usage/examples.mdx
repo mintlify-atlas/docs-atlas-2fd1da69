@@ -1,0 +1,479 @@
+---
+title: Examples
+description: Real-world usage examples for sandboxec
+---
+
+## Overview
+
+This page provides practical examples of using sandboxec for common scenarios. All examples are taken from real-world use cases.
+
+## Basic Examples
+
+### Minimal Sandboxed Command
+
+The simplest possible sandbox - execute a single binary with minimal filesystem access:
+
+```bash
+sandboxec --fs rx:/usr -- /usr/bin/id
+```
+
+This allows:
+- Read and execute access to `/usr` (where the binary lives)
+- No write access anywhere
+- No network access
+
+<Accordion title="Expected output">
+```
+uid=1000(user) gid=1000(user) groups=1000(user)
+```
+</Accordion>
+
+### System Binaries with Temporary Storage
+
+Allow executing system binaries and writing to `/tmp`:
+
+```bash
+sandboxec \
+  --fs rx:/bin \
+  --fs rx:/usr \
+  --fs rw:/tmp \
+  -- /bin/ls /tmp
+```
+
+This pattern is common for commands that need temporary file storage.
+
+### Lock Command to Current Directory
+
+Restrict a command to only access the current working directory:
+
+```bash
+sandboxec \
+  --fs rx:/usr \
+  --fs rw:$PWD \
+  -- your-command
+```
+
+Useful for:
+- Build tools that should only touch the project
+- Scripts that process local files
+- Commands that shouldn't access parent directories
+
+## Network Examples
+
+### Outbound HTTPS Only
+
+Allow only secure outbound connections:
+
+```bash
+sandboxec --fs rx:/usr --net c:443 -- /usr/bin/curl https://example.com
+```
+
+<Tip>
+This is one of the most common patterns for sandboxing commands that fetch remote data.
+</Tip>
+
+### HTTP and HTTPS Client
+
+Allow both insecure and secure outbound connections:
+
+```bash
+sandboxec \
+  --fs rx:/usr \
+  --net c:80 \
+  --net c:443 \
+  -- wget http://example.com
+```
+
+### Local Development Server
+
+Run a development server with no outbound network access:
+
+```bash
+sandboxec \
+  --fs rx:/usr \
+  --fs r:$PWD \
+  --net b:8080 \
+  -- python3 -m http.server 8080
+```
+
+The server can:
+- Bind to port 8080
+- Read files from the current directory
+- **Cannot** make outbound connections
+- **Cannot** write files
+
+## Build Tool Examples
+
+### Build with Outbound Package Fetch
+
+Common pattern for build tools that download dependencies:
+
+```bash
+sandboxec \
+  --fs rx:/usr \
+  --fs rw:$PWD \
+  --fs rw:/tmp \
+  --net c:443 \
+  -- your-build-command
+```
+
+This allows:
+- Executing system binaries
+- Reading/writing project files
+- Creating temporary files
+- HTTPS connections for package downloads
+
+### Using Unsafe Host Runtime
+
+For complex build tools with many dynamic dependencies:
+
+```bash
+sandboxec \
+  --unsafe-host-runtime \
+  --fs rw:$PWD \
+  --fs rw:/tmp \
+  --net c:443 \
+  -- your-build-command
+```
+
+<Warning>
+`--unsafe-host-runtime` automatically includes runtime paths and shared libraries, which:
+- **Weakens** least-privilege guarantees
+- **Increases** startup latency (especially for short-lived commands)
+- **Broadens** the attack surface
+
+Use only when necessary and trust the command being run.
+</Warning>
+
+### Node.js Package Installation
+
+```bash
+sandboxec \
+  --fs rx:/usr \
+  --fs rx:/bin \
+  --fs rw:$PWD \
+  --fs rw:/tmp \
+  --fs rw:~/.npm \
+  --net c:443 \
+  -- npm install
+```
+
+## Configuration File Examples
+
+### Run with Explicit Config File
+
+Use a local configuration file:
+
+```bash
+sandboxec --config ./sandboxec.yaml -- /bin/echo ok
+```
+
+Example `sandboxec.yaml`:
+
+```yaml
+fs:
+  - rx:/bin
+  - rx:/usr
+  - rw:/tmp
+net:
+  - c:443
+```
+
+### Run with Named Profile
+
+Use a profile from the [sandboxec/profiles](https://github.com/sandboxec/profiles) repository:
+
+```bash
+sandboxec --named-config agents/claude -- claude --dangerously-skip-permissions
+```
+
+This fetches and applies the profile from:
+```
+https://github.com/sandboxec/profiles/raw/refs/heads/based/agents/claude.yaml
+```
+
+### Remote Configuration URL
+
+Fetch configuration from any HTTPS endpoint:
+
+```bash
+sandboxec --config https://example.com/sandboxec.yaml -- your-command
+```
+
+## Advanced Examples
+
+### Testing Untrusted Script
+
+Minimal permissions for running an untrusted script:
+
+```bash
+sandboxec \
+  --fs rx:/usr \
+  --fs rx:/bin \
+  --fs r:$PWD/untrusted-script.sh \
+  --fs rw:/tmp/sandbox-output \
+  -- bash $PWD/untrusted-script.sh
+```
+
+The script can:
+- Execute system binaries
+- Read its own contents
+- Write to a dedicated output directory
+- **Cannot** access other files in `$PWD`
+- **Cannot** make network connections
+
+### Database Client
+
+Connect to a local database:
+
+```bash
+sandboxec \
+  --fs rx:/usr \
+  --fs r:~/.pgpass \
+  --net c:5432 \
+  -- psql -h localhost -U user -d database
+```
+
+### API Server with Logging
+
+Web server that can write logs but not modify source:
+
+```bash
+sandboxec \
+  --fs rx:/usr \
+  --fs r:$PWD/src \
+  --fs rw:$PWD/logs \
+  --net b:8080 \
+  --net c:443 \
+  -- node server.js
+```
+
+### Container-Free CI Job
+
+Run CI builds without Docker:
+
+```bash
+sandboxec \
+  --unsafe-host-runtime \
+  --fs rw:$PWD \
+  --fs rw:/tmp \
+  --net c:443 \
+  -- make build test
+```
+
+### Static Site Generator
+
+Sandbox a static site build:
+
+```bash
+sandboxec \
+  --fs rx:/usr \
+  --fs rx:/bin \
+  --fs r:$PWD/content \
+  --fs r:$PWD/themes \
+  --fs rw:$PWD/public \
+  -- hugo build
+```
+
+The generator can:
+- Read content and themes
+- Write output to `public/`
+- **Cannot** modify source files
+- **Cannot** make network requests
+
+## MCP Configuration
+
+### MCP Server Mode
+
+Run sandboxec as an MCP (Model Context Protocol) server:
+
+```bash
+sandboxec --mode mcp --fs rx:/usr --fs rw:/tmp --net c:443
+```
+
+In MCP mode:
+- No command arguments are accepted
+- Provides an `exec` tool over stdio
+- All commands executed via MCP inherit the sandbox policy
+
+### MCP Client Configuration
+
+Configure an MCP client (e.g., Claude Desktop, Cline, etc.) to use sandboxec:
+
+```json
+{
+  "mcpServers": {
+    "sandboxec": {
+      "command": "/path/to/go/bin/sandboxec",
+      "args": [
+        "--mode", "mcp",
+        "--fs", "rx:/usr",
+        "--fs", "rw:/tmp",
+        "--fs", "rw:/path/to/your/workspace",
+        "--net", "c:443"
+      ]
+    }
+  }
+}
+```
+
+<Tip>
+Adjust the `command` path to match your sandboxec installation:
+- Go install: `~/go/bin/sandboxec`
+- System install: `/usr/local/bin/sandboxec`
+- Custom: wherever you placed the binary
+</Tip>
+
+### MCP with Named Config
+
+Simplify MCP configuration using named profiles:
+
+```json
+{
+  "mcpServers": {
+    "sandboxec": {
+      "command": "/path/to/go/bin/sandboxec",
+      "args": [
+        "--mode", "mcp",
+        "--named-config", "agents/claude"
+      ]
+    }
+  }
+}
+```
+
+### MCP Tool Usage
+
+The MCP server exposes an `exec` tool:
+
+**Tool**: `exec`
+
+**Input**:
+- `command` (required): Command to execute
+- `args` (optional): Array of arguments
+
+**Output**:
+- `stdout`: Standard output as string
+- `stderr`: Standard error as string  
+- `exit_code`: Exit code as integer
+
+**Example** (from MCP client):
+
+```json
+{
+  "tool": "exec",
+  "arguments": {
+    "command": "/usr/bin/ls",
+    "args": ["-la", "/tmp"]
+  }
+}
+```
+
+## By Use Case
+
+<AccordionGroup>
+  <Accordion title="AI Agents">
+    Sandbox commands executed by AI agents to limit blast radius:
+    
+    ```bash
+    # Using named profile
+    sandboxec --named-config agents/claude -- claude --dangerously-skip-permissions
+    
+    # Custom policy
+    sandboxec \
+      --fs rx:/usr \
+      --fs rw:$PWD \
+      --fs rw:/tmp \
+      --net c:443 \
+      --mode mcp
+    ```
+  </Accordion>
+  
+  <Accordion title="Third-Party CLIs">
+    Run untrusted or rarely-used tools with limited access:
+    
+    ```bash
+    sandboxec \
+      --fs rx:/usr \
+      --fs rw:$PWD/output \
+      --net c:443 \
+      -- third-party-cli process --input data.json
+    ```
+  </Accordion>
+  
+  <Accordion title="Generated Code">
+    Execute AI-generated or dynamically created scripts:
+    
+    ```bash
+    sandboxec \
+      --fs rx:/usr \
+      --fs r:$PWD/generated-script.py \
+      --fs rw:/tmp/results \
+      -- python3 generated-script.py
+    ```
+  </Accordion>
+  
+  <Accordion title="Install Scripts">
+    Test install scripts before trusting them:
+    
+    ```bash
+    sandboxec \
+      --fs rx:/usr \
+      --fs rw:/tmp/test-install \
+      --net c:443 \
+      -- bash install.sh
+    ```
+  </Accordion>
+  
+  <Accordion title="Development Tools">
+    Restrict build tools to project boundaries:
+    
+    ```bash
+    sandboxec \
+      --unsafe-host-runtime \
+      --fs rw:$PWD \
+      --fs rw:/tmp \
+      --net c:443 \
+      -- npm run build
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Combining Multiple Rules
+
+Complex scenarios often require many rules:
+
+```bash
+sandboxec \
+  --fs rx:/bin \
+  --fs rx:/usr \
+  --fs rx:/lib \
+  --fs rx:/lib64 \
+  --fs rx:/usr/lib \
+  --fs r:/etc \
+  --fs rw:$PWD \
+  --fs rw:/tmp \
+  --fs rw:~/.cache \
+  --net c:80 \
+  --net c:443 \
+  --net c:5432 \
+  --net b:8080 \
+  --best-effort \
+  -- complex-application
+```
+
+<Tip>
+For complex policies, use a [configuration file](/usage/configuration) instead of long command lines.
+</Tip>
+
+## Quick Reference
+
+| Scenario | Filesystem Rules | Network Rules |
+|----------|------------------|---------------|
+| Read-only binary execution | `rx:/usr` | None |
+| Build with dependencies | `rx:/usr`, `rw:$PWD`, `rw:/tmp` | `c:443` |
+| Local web server | `rx:/usr`, `r:$PWD` | `b:8080` |
+| API client | `rx:/usr`, `rw:/tmp` | `c:443` |
+| Database tool | `rx:/usr`, `r:~/.config` | `c:5432` |
+| Untrusted script | `rx:/usr`, `r:$PWD/script.sh`, `rw:/tmp/output` | None |
+| Development | `--unsafe-host-runtime`, `rw:$PWD` | `c:443`, `b:3000` |

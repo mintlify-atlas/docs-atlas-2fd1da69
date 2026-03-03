@@ -1,0 +1,333 @@
+---
+title: Kernel Compatibility
+description: Landlock ABI versions and kernel requirements
+---
+
+## Overview
+
+sandboxec relies on Linux's **Landlock LSM** (Linux Security Module). Different features require different Landlock ABI versions, which map to specific kernel versions.
+
+<Warning>
+  **Landlock must be enabled in your kernel.** Most modern distributions enable it by default, but some older or custom kernels may not have Landlock support compiled in.
+</Warning>
+
+## Capability Table
+
+The following table shows which features require which Landlock ABI and kernel versions:
+
+| Capability | Landlock ABI | Typical Minimum Kernel |
+| --- | --- | --- |
+| **Filesystem restrictions** | v1+ | **5.13+** |
+| **TCP bind/connect restrictions** | v4+ | **6.7+** |
+| **Scoped restrictions** (`--restrict-scoped`) | v6+ | **Newer kernels only** |
+
+<Info>
+  The kernel version is "typical" because distributions may backport Landlock features to older kernels. Check your actual Landlock ABI support using the methods below.
+</Info>
+
+## Feature Requirements
+
+<Tabs>
+  <Tab title="Filesystem (ABI v1+)">
+    **Available since:** Linux 5.13 (2021)
+    
+    Controls:
+    - Read access to files and directories
+    - Write access (create, modify, delete)
+    - Execute access (run binaries)
+    
+    ```bash
+    # Requires Linux 5.13+
+    sandboxec --fs rx:/usr -- /usr/bin/id
+    ```
+    
+    <Check>Supported on most modern distributions (Ubuntu 22.04+, Debian 12+, RHEL 9+, etc.)</Check>
+  </Tab>
+  
+  <Tab title="Network (ABI v4+)">
+    **Available since:** Linux 6.7 (2024)
+    
+    Controls:
+    - TCP bind (server listening)
+    - TCP connect (outbound connections)
+    
+    ```bash
+    # Requires Linux 6.7+
+    sandboxec --fs rx:/usr --net c:443 -- curl https://example.com
+    ```
+    
+    <Warning>Not available on older LTS distributions (Ubuntu 22.04, Debian 11, etc.). Use `--best-effort` to skip network rules gracefully on these systems.</Warning>
+  </Tab>
+  
+  <Tab title="Scoped IPC (ABI v6+)">
+    **Available since:** Newer kernels (exact version varies)
+    
+    Controls:
+    - Inter-process communication restrictions
+    - Signal restrictions
+    
+    ```bash
+    # Requires latest kernels
+    sandboxec --restrict-scoped --fs rx:/usr -- command
+    ```
+    
+    <Info>This is an advanced feature. Most users don't need `--restrict-scoped`.</Info>
+  </Tab>
+</Tabs>
+
+## Checking Kernel Support
+
+### Method 1: Check Kernel Version
+
+```bash
+uname -r
+```
+
+Compare the output to the minimum kernel versions in the table above.
+
+<CodeGroup>
+```bash Example: Modern Kernel
+$ uname -r
+6.8.0-45-generic
+# ✓ Supports filesystem, network, and scoped restrictions
+```
+
+```bash Example: Older Kernel
+$ uname -r
+5.15.0-58-generic
+# ✓ Supports filesystem restrictions
+# ✗ Does NOT support network or scoped restrictions
+```
+</CodeGroup>
+
+### Method 2: Test with sandboxec
+
+Run a simple command and observe the behavior:
+
+```bash
+# Test filesystem restrictions
+sandboxec --fs rx:/usr -- /usr/bin/id
+```
+
+If filesystem restrictions work, try network rules:
+
+```bash
+# Test network restrictions
+sandboxec --fs rx:/usr --net c:443 -- /usr/bin/curl https://example.com
+```
+
+<Accordion title="Expected Errors on Unsupported Kernels">
+  If your kernel doesn't support a feature, you'll see errors like:
+  
+  ```
+  Error: Landlock ABI version too old for network restrictions
+  ```
+  
+  Use `--best-effort` to continue with supported features only.
+</Accordion>
+
+## Best-Effort Mode
+
+The `--best-effort` flag allows sandboxec to **gracefully degrade** when the kernel lacks support for certain features.
+
+### How It Works
+
+<Steps>
+  <Step title="Parse all rules">
+    sandboxec reads all `--fs` and `--net` rules from CLI or config.
+  </Step>
+  
+  <Step title="Check kernel support">
+    Determines which Landlock ABI version is available.
+  </Step>
+  
+  <Step title="Apply supported features only">
+    - Filesystem rules are applied on ABI v1+ kernels
+    - Network rules are applied on ABI v4+ kernels
+    - Scoped restrictions are applied on ABI v6+ kernels
+    - Unsupported features are silently skipped
+  </Step>
+  
+  <Step title="Launch command">
+    Command runs with whatever restrictions the kernel supports.
+  </Step>
+</Steps>
+
+### Example Usage
+
+```bash
+# Config file requests both filesystem and network restrictions
+sandboxec --best-effort --config sandboxec.yaml -- command
+```
+
+Behavior:
+- **On Linux 6.8+**: Both filesystem and network restrictions apply
+- **On Linux 5.15**: Only filesystem restrictions apply (network rules skipped)
+- **On Linux 5.10**: No restrictions apply (command runs normally)
+
+<Warning>
+  **Security implication:** With `--best-effort`, your command may run with **fewer restrictions** than expected on older kernels.
+  
+  For security-critical workloads, consider enforcing minimum kernel versions or failing fast without `--best-effort`.
+</Warning>
+
+### When to Use Best-Effort
+
+<CardGroup cols={2}>
+  <Card title="Good Use Cases" icon="check">
+    - Cross-platform scripts that run on various kernel versions
+    - Development environments where strict enforcement isn't critical
+    - Gradual rollout of sandboxing policies
+  </Card>
+  
+  <Card title="Avoid for" icon="xmark">
+    - Production security boundaries
+    - Compliance-required isolation
+    - Multi-tenant environments
+  </Card>
+</CardGroup>
+
+## Forcing a Specific ABI Version
+
+You can force sandboxec to use a specific Landlock ABI version:
+
+```bash
+sandboxec --abi 4 --fs rx:/usr --net c:443 -- command
+```
+
+<Tabs>
+  <Tab title="When to Use">
+    - Testing behavior on systems with newer Landlock versions
+    - Debugging ABI-specific issues
+    - Ensuring consistent behavior across different kernel versions
+  </Tab>
+  
+  <Tab title="Risks">
+    <Warning>
+      Setting `--abi` to a version **higher** than your kernel supports will cause sandboxec to fail.
+      
+      Setting it **lower** may disable features that would otherwise be available.
+    </Warning>
+  </Tab>
+</Tabs>
+
+### ABI Version Reference
+
+| ABI Version | Introduced Features |
+| --- | --- |
+| **v1** | Filesystem read/write/execute restrictions |
+| **v2** | Additional filesystem controls (refer, truncate) |
+| **v3** | Extended filesystem metadata restrictions |
+| **v4** | TCP bind and connect restrictions |
+| **v5** | Additional network protocol controls |
+| **v6** | Scoped IPC and signal restrictions |
+
+<Info>
+  Use `--abi 0` (default) to automatically detect and use the highest available ABI version on your kernel.
+</Info>
+
+## Distribution-Specific Notes
+
+<AccordionGroup>
+  <Accordion title="Ubuntu">
+    - **Ubuntu 24.04+**: Full support (kernel 6.8+)
+    - **Ubuntu 22.04 LTS**: Filesystem only (kernel 5.15)
+    - **Ubuntu 20.04 LTS**: Filesystem only (kernel 5.4, requires backports)
+    
+    To get network support on Ubuntu 22.04, upgrade to the HWE kernel:
+    ```bash
+    sudo apt install linux-generic-hwe-22.04
+    ```
+  </Accordion>
+  
+  <Accordion title="Debian">
+    - **Debian 13+ (Trixie)**: Full support
+    - **Debian 12 (Bookworm)**: Filesystem only (kernel 6.1)
+    - **Debian 11 (Bullseye)**: Filesystem only (kernel 5.10)
+  </Accordion>
+  
+  <Accordion title="RHEL / CentOS / Rocky / Alma">
+    - **RHEL 9+**: Filesystem support (kernel 5.14+)
+    - **RHEL 8**: May require custom kernel or backports
+    
+    Network restrictions likely unavailable unless using a very recent kernel.
+  </Accordion>
+  
+  <Accordion title="Arch Linux">
+    - **Rolling release**: Full support (typically latest stable kernel)
+    - Landlock enabled by default
+  </Accordion>
+  
+  <Accordion title="Fedora">
+    - **Fedora 38+**: Full support (kernel 6.2+)
+    - **Fedora 36-37**: Filesystem only
+  </Accordion>
+</AccordionGroup>
+
+## Troubleshooting
+
+### Error: "Landlock not supported"
+
+Your kernel either:
+1. Is too old (< 5.13)
+2. Was compiled without Landlock support
+3. Has Landlock disabled at boot
+
+**Solution:**
+- Upgrade to a modern kernel (5.13+ for basic support, 6.7+ for network support)
+- Check if Landlock is enabled: `cat /sys/kernel/security/lsm` should include `landlock`
+- If `landlock` is missing, your kernel was not compiled with Landlock or needs a boot parameter
+
+### Error: "network restrictions require ABI v4+"
+
+Your kernel supports filesystem restrictions but not network restrictions.
+
+**Solutions:**
+1. Remove network rules: `--net c:443`
+2. Use `--best-effort` to skip network rules
+3. Upgrade to kernel 6.7+
+
+### Error: "scoped restrictions require ABI v6+"
+
+The `--restrict-scoped` flag requires very new kernels.
+
+**Solution:**
+- Remove `--restrict-scoped` (most users don't need it)
+- Upgrade to the latest stable kernel
+- Use `--best-effort` to skip this feature
+
+## Recommendations
+
+<CardGroup cols={2}>
+  <Card title="Development" icon="laptop-code">
+    Use `--best-effort` for flexibility across different developer machines.
+    
+    ```yaml sandboxec.yaml
+    best-effort: true
+    fs:
+      - rx:/usr
+      - rw:$PWD
+    net:
+      - c:443
+    ```
+  </Card>
+  
+  <Card title="Production" icon="server">
+    Enforce minimum kernel versions and avoid `--best-effort` for security-critical workloads.
+    
+    ```yaml sandboxec.yaml
+    best-effort: false
+    fs:
+      - rx:/usr
+      - rw:/app
+    net:
+      - c:443
+    ```
+    
+    Fail fast if kernel doesn't meet requirements.
+  </Card>
+</CardGroup>
+
+<Info>
+  For CI/CD pipelines, document the minimum kernel version in your README and pin runner images to distributions with sufficient Landlock support.
+</Info>

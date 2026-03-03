@@ -1,0 +1,288 @@
+---
+title: Installation
+description: Complete installation guide for sandboxec
+---
+
+# Installation
+
+## System Requirements
+
+<Note>
+**Minimum requirement**: Linux kernel 5.13 or later with Landlock support enabled
+</Note>
+
+### Check Your Kernel Version
+
+Before installing, verify your kernel version:
+
+```bash
+uname -r
+```
+
+If your version is below 5.13, you'll need to upgrade your kernel to use sandboxec.
+
+### Kernel Compatibility Table
+
+Different features require different Landlock ABI versions:
+
+| Capability | Landlock ABI | Typical Minimum Kernel |
+| --- | --- | --- |
+| Filesystem restrictions | v1+ | 5.13+ |
+| TCP bind/connect restrictions | v4+ | 6.7+ |
+| Scoped restrictions (`--restrict-scoped`) | v6+ | newer kernels only |
+
+<Info>
+Filesystem sandboxing works on all kernels 5.13+. Network rules require a newer kernel (6.7+).
+</Info>
+
+## Installation Methods
+
+<Steps>
+  <Step title="Install Script (Recommended)">
+    The fastest and easiest way to install sandboxec:
+
+    ```bash
+    curl -sSL https://get.sandbox.ec | sh
+    ```
+
+    This script will:
+    - Detect your system architecture
+    - Download the latest pre-built binary
+    - Install it to a directory in your PATH
+    - Verify the installation
+
+    <Note>
+    The install script requires `curl` and will attempt to install to `/usr/local/bin` or `~/.local/bin` depending on your permissions.
+    </Note>
+  </Step>
+
+  <Step title="Go Install">
+    If you have Go installed, you can build and install sandboxec directly:
+
+    ```bash
+    go install go.sandbox.ec/sandboxec@v0.3.0
+    ```
+
+    <Warning>
+    **Go version requirement**: 1.24.0 or later
+
+    Check your Go version with:
+    ```bash
+    go version
+    ```
+
+    If you need to upgrade Go, visit [go.dev/doc/install](https://go.dev/doc/install)
+    </Warning>
+
+    The binary will be installed to `$GOPATH/bin/sandboxec` (typically `~/go/bin/sandboxec`).
+
+    Make sure `$GOPATH/bin` is in your PATH:
+    ```bash
+    export PATH="$PATH:$(go env GOPATH)/bin"
+    ```
+  </Step>
+
+  <Step title="Pre-built Binary">
+    Download a pre-built binary from the releases page:
+
+    1. Visit [github.com/sandboxec/sandboxec/releases](https://github.com/sandboxec/sandboxec/releases)
+    2. Download the binary for your architecture (e.g., `sandboxec_linux_amd64`)
+    3. Make it executable and move it to your PATH:
+
+    ```bash
+    # Example for amd64
+    chmod +x sandboxec_linux_amd64
+    sudo mv sandboxec_linux_amd64 /usr/local/bin/sandboxec
+    ```
+
+    <Info>
+    Available architectures:
+    - Linux amd64 (x86_64)
+    - Linux arm64 (aarch64)
+    - Linux 386
+    - Linux arm
+    </Info>
+  </Step>
+
+  <Step title="Build from Source">
+    For the latest development version or custom builds:
+
+    ```bash
+    git clone https://github.com/sandboxec/sandboxec.git
+    cd sandboxec/
+    # Optional: checkout a specific version
+    # git checkout v0.3.0
+    make build
+    ```
+
+    The compiled binary will be in `./bin/sandboxec`.
+
+    Test it:
+    ```bash
+    ./bin/sandboxec --help
+    ```
+
+    Install to your PATH:
+    ```bash
+    sudo cp ./bin/sandboxec /usr/local/bin/
+    ```
+
+    <Warning>
+    **Building from master branch**: The `master` branch contains the latest code changes and updates, which might not have undergone thorough testing and quality assurance. You may encounter instability or unexpected behavior.
+
+    For production use, always checkout a tagged release version.
+    </Warning>
+  </Step>
+</Steps>
+
+## Verify Installation
+
+Confirm sandboxec is installed correctly:
+
+<CodeGroup>
+```bash Version Check
+sandboxec --version
+```
+
+```bash Help Output
+sandboxec --help
+```
+
+```bash Test Run
+sandboxec --fs rx:/usr -- /usr/bin/echo "Installation successful!"
+```
+</CodeGroup>
+
+You should see:
+- Version `v0.3.0` or later
+- Help text with usage information
+- Successful command execution
+
+## Post-Installation
+
+### Shell Completion (Optional)
+
+If your shell supports completion, you can set it up for better CLI experience. Check if sandboxec provides completion scripts:
+
+```bash
+sandboxec completion --help
+```
+
+### Configuration Directory (Optional)
+
+Create a config directory for storing reusable profiles:
+
+```bash
+mkdir -p ~/.config/sandboxec
+```
+
+You can then create `sandboxec.yaml` files here for default policies. See the [Configuration Guide](/usage/configuration) for details.
+
+## Upgrading
+
+### From Install Script
+
+Re-run the install script to get the latest version:
+
+```bash
+curl -sSL https://get.sandbox.ec | sh
+```
+
+### From Go Install
+
+Update to the latest version:
+
+```bash
+go install go.sandbox.ec/sandboxec@latest
+```
+
+Or install a specific version:
+
+```bash
+go install go.sandbox.ec/sandboxec@v0.3.0
+```
+
+### From Source
+
+Pull the latest changes and rebuild:
+
+```bash
+cd sandboxec/
+git pull
+git checkout v0.3.0  # or latest tag
+make build
+sudo cp ./bin/sandboxec /usr/local/bin/
+```
+
+## Troubleshooting
+
+### Command Not Found
+
+If you get `command not found` after installation:
+
+1. **Check if the binary exists**:
+   ```bash
+   which sandboxec
+   ls -l $(which sandboxec)
+   ```
+
+2. **Verify PATH** (for Go install):
+   ```bash
+   echo $PATH | grep -o "$(go env GOPATH)/bin"
+   ```
+
+3. **Add to PATH** if needed:
+   ```bash
+   export PATH="$PATH:$(go env GOPATH)/bin"
+   ```
+
+   Add to your shell profile (`~/.bashrc`, `~/.zshrc`) to make it permanent.
+
+### Landlock Not Supported
+
+If you see errors about Landlock not being supported:
+
+```
+Landlock is not supported on this kernel
+```
+
+**Solutions**:
+- Upgrade your kernel to 5.13 or later
+- Use `--best-effort` to gracefully handle missing features
+- Check if Landlock is enabled in your kernel config:
+  ```bash
+  cat /boot/config-$(uname -r) | grep LANDLOCK
+  ```
+
+### Permission Denied During Install
+
+If the install script fails with permission errors:
+
+1. **Try installing to user directory**:
+   ```bash
+   mkdir -p ~/.local/bin
+   # Download binary manually and place in ~/.local/bin
+   export PATH="$HOME/.local/bin:$PATH"
+   ```
+
+2. **Or use sudo** for system-wide install:
+   ```bash
+   curl -sSL https://get.sandbox.ec | sudo sh
+   ```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Run your first sandboxed command
+  </Card>
+  <Card title="CLI Reference" icon="terminal" href="/usage/command-reference">
+    Explore all command-line options
+  </Card>
+  <Card title="Configuration" icon="gear" href="/usage/configuration">
+    Set up YAML config files and profiles
+  </Card>
+  <Card title="Examples" icon="code" href="/usage/examples">
+    See real-world usage patterns
+  </Card>
+</CardGroup>

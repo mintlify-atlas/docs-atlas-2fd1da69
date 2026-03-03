@@ -1,0 +1,406 @@
+---
+title: Network Rules
+description: Control TCP network access with port-level rules
+---
+
+## Overview
+
+Network rules control TCP bind and connect operations. Like filesystem rules, they follow an **allow-list model**: any network operation not explicitly allowed is denied.
+
+<Warning>
+Network restrictions require Landlock ABI v4+, typically available in Linux kernel 6.7 or newer.
+</Warning>
+
+## Rule Format
+
+Network rules use the format:
+
+```
+RIGHTS:PORT
+```
+
+- **RIGHTS**: What network operations are allowed (bind, connect, or both)
+- **PORT**: The TCP port number (0-65535)
+
+### Adding Rules
+
+<CodeGroup>
+```bash CLI flag
+sandboxec --fs rx:/usr --net c:443 -- /usr/bin/curl https://example.com
+```
+
+```yaml Configuration file
+net:
+  - c:443      # HTTPS outbound
+  - c:80       # HTTP outbound
+  - b:8080     # Bind local server
+```
+</CodeGroup>
+
+## Network Rights
+
+All available network rights:
+
+<ParamField path="bind" type="b">
+  Allow binding (listening) on a TCP port. Use for servers and local services.
+  
+  ```bash
+  sandboxec --fs rx:/usr --net b:8080 -- python3 -m http.server 8080
+  ```
+  
+  **Allowed operations:**
+  - `bind()` system call on the specified port
+  - Listen for incoming connections
+  - Accept connections
+  
+  <Note>
+  Bind permission does not include connect permission. Use `bc` for both.
+  </Note>
+</ParamField>
+
+<ParamField path="connect" type="c">
+  Allow connecting (outbound) to a TCP port. Use for HTTP clients, API calls, database connections.
+  
+  ```bash
+  sandboxec --fs rx:/usr --net c:443 -- curl https://example.com
+  ```
+  
+  **Allowed operations:**
+  - `connect()` system call to the specified port
+  - Establish outbound TCP connections
+  
+  <Tip>
+  This is the most common network rule for sandboxing commands that make outbound requests.
+  </Tip>
+</ParamField>
+
+<ParamField path="bind_connect" type="bc">
+  Allow both binding and connecting on a TCP port.
+  
+  ```bash
+  sandboxec --fs rx:/usr --net bc:8080 -- your-server-with-client
+  ```
+  
+  **Allowed operations:**
+  - All `bind` operations
+  - All `connect` operations
+  
+  <Note>
+  The shorthand `bc` can also be written as `cb` - both are equivalent.
+  </Note>
+</ParamField>
+
+## Port Specification
+
+Ports must be specified as integers between 0 and 65535:
+
+```bash
+# Well-known ports
+sandboxec --net c:80 --net c:443 --fs rx:/usr -- curl https://example.com
+
+# Custom ports
+sandboxec --net b:8080 --fs rx:/usr -- python3 -m http.server 8080
+
+# High ports
+sandboxec --net c:50051 --fs rx:/usr -- grpc-client
+```
+
+<Warning>
+Each rule applies to a single port. To allow multiple ports, use multiple `--net` flags.
+</Warning>
+
+## Kernel Requirements
+
+Network rules require specific kernel versions:
+
+| Feature | Landlock ABI | Minimum Kernel | Notes |
+|---------|--------------|----------------|-------|
+| TCP bind restrictions | v4+ | 6.7+ | Control `bind()` syscall |
+| TCP connect restrictions | v4+ | 6.7+ | Control `connect()` syscall |
+
+### Checking Compatibility
+
+To verify your kernel supports network rules:
+
+```bash
+# Check kernel version
+uname -r
+
+# Try a simple network rule
+sandboxec --fs rx:/usr --net c:443 -- /usr/bin/curl https://example.com
+
+# Use --best-effort to degrade gracefully on old kernels
+sandboxec --best-effort --fs rx:/usr --net c:443 -- your-command
+```
+
+<Note>
+With `--best-effort`, sandboxec will skip network rules on kernels that don't support them, applying only filesystem restrictions.
+</Note>
+
+## Common Patterns
+
+### Outbound HTTPS Only
+
+Allow only secure outbound connections:
+
+```bash
+sandboxec --fs rx:/usr --net c:443 -- /usr/bin/curl https://example.com
+```
+
+### HTTP and HTTPS Client
+
+Allow both HTTP and HTTPS:
+
+```bash
+sandboxec --fs rx:/usr --net c:80 --net c:443 -- wget http://example.com
+```
+
+### Local Development Server
+
+Bind a local port for testing:
+
+```bash
+sandboxec --fs rx:/usr --fs rw:$PWD --net b:8080 -- python3 -m http.server 8080
+```
+
+### API Service with Outbound Calls
+
+Server that also makes outbound requests:
+
+```bash
+sandboxec \
+  --fs rx:/usr \
+  --fs rw:$PWD \
+  --net b:8080 \
+  --net c:443 \
+  -- node server.js
+```
+
+### Database Client
+
+Connect to a database server:
+
+```bash
+sandboxec \
+  --fs rx:/usr \
+  --fs rw:$PWD \
+  --net c:5432 \
+  -- psql -h localhost -U user
+```
+
+## Real-World Examples
+
+<CodeGroup>
+```bash Package manager
+# Allow HTTPS for downloading packages
+sandboxec \
+  --fs rx:/usr \
+  --fs rw:$PWD \
+  --fs rw:/tmp \
+  --net c:443 \
+  -- npm install
+```
+
+```bash Web scraper
+# HTTP/HTTPS client with local file output
+sandboxec \
+  --fs rx:/usr \
+  --fs rw:$PWD/output \
+  --net c:80 \
+  --net c:443 \
+  -- python3 scraper.py
+```
+
+```bash Local web server
+# Development server with no outbound access
+sandboxec \
+  --fs rx:/usr \
+  --fs r:$PWD \
+  --net b:3000 \
+  -- npm start
+```
+
+```bash Build with remote cache
+# Build tool with remote artifact cache
+sandboxec \
+  --unsafe-host-runtime \
+  --fs rw:$PWD \
+  --fs rw:/tmp \
+  --net c:443 \
+  --net c:9000 \
+  -- bazel build //...
+```
+
+```bash Testing webhook handler
+# Server that receives and processes webhooks
+sandboxec \
+  --fs rx:/usr \
+  --fs rw:$PWD/logs \
+  --net b:8080 \
+  -- webhook-server
+```
+</CodeGroup>
+
+## Rule Behavior
+
+### Allow-List Model
+
+<Warning>
+Any network operation not explicitly allowed is **completely blocked**. The sandboxed process will receive connection refused or operation not permitted errors.
+</Warning>
+
+```bash
+# This will fail - port 443 not allowed
+sandboxec --fs rx:/usr -- curl https://example.com
+# Error: curl: (7) Failed to connect to example.com port 443: Operation not permitted
+
+# This succeeds - port 443 is now allowed
+sandboxec --fs rx:/usr --net c:443 -- curl https://example.com
+```
+
+### Cumulative Rules
+
+Multiple `--net` flags are cumulative:
+
+```bash
+sandboxec --net c:80 --net c:443 --net c:8080 --fs rx:/usr -- your-client
+```
+
+All ports are allowed simultaneously.
+
+### Port-Specific Rules
+
+Each rule applies to a **specific port number**:
+
+```bash
+# Allows connect to 443 only (not 80)
+sandboxec --net c:443 --fs rx:/usr -- curl http://example.com
+# Error: connection refused
+
+# Both ports now allowed
+sandboxec --net c:443 --net c:80 --fs rx:/usr -- curl http://example.com
+```
+
+### No Wildcard Ports
+
+<Note>
+sandboxec does not support wildcard or port range rules. Each port must be explicitly specified.
+</Note>
+
+```bash
+# To allow multiple ports, list them individually
+sandboxec \
+  --net c:80 \
+  --net c:443 \
+  --net c:8080 \
+  --net c:8443 \
+  --fs rx:/usr \
+  -- your-command
+```
+
+## Combining with Filesystem Rules
+
+Network rules are almost always used with filesystem rules:
+
+```bash
+sandboxec \
+  --fs rx:/usr \
+  --fs rx:/lib \
+  --fs rx:/usr/lib \
+  --fs rw:/tmp \
+  --net c:443 \
+  -- your-command
+```
+
+<Tip>
+Most network-enabled commands need at minimum:
+- `rx` rights on `/usr` (for binaries and libraries)
+- `c` rights on relevant ports (80, 443, etc.)
+- Optional: `rw` on `/tmp` or `$PWD` for file operations
+</Tip>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Connection refused or Operation not permitted">
+    Ensure the target port is allowed:
+    
+    ```bash
+    # For HTTPS (port 443)
+    sandboxec --fs rx:/usr --net c:443 -- curl https://example.com
+    
+    # For HTTP (port 80)
+    sandboxec --fs rx:/usr --net c:80 -- curl http://example.com
+    ```
+  </Accordion>
+  
+  <Accordion title="Cannot bind: Address already in use">
+    This is a normal OS error, not a sandboxec restriction. Another process is using the port:
+    
+    ```bash
+    # Check what's using the port
+    lsof -i :8080
+    
+    # Use a different port
+    sandboxec --net b:8081 --fs rx:/usr -- python3 -m http.server 8081
+    ```
+  </Accordion>
+  
+  <Accordion title="Network rules not working on old kernel">
+    Network rules require kernel 6.7+. Check your version:
+    
+    ```bash
+    uname -r
+    ```
+    
+    Use `--best-effort` to skip unsupported features:
+    
+    ```bash
+    sandboxec --best-effort --fs rx:/usr --net c:443 -- your-command
+    ```
+  </Accordion>
+  
+  <Accordion title="DNS resolution fails">
+    DNS typically uses UDP, which Landlock does not control. If DNS fails, it's likely a filesystem issue (missing `/etc/resolv.conf` or libraries):
+    
+    ```bash
+    sandboxec \
+      --fs rx:/usr \
+      --fs rx:/lib \
+      --fs rx:/usr/lib \
+      --fs r:/etc \
+      --net c:443 \
+      -- curl https://example.com
+    ```
+  </Accordion>
+  
+  <Accordion title="Wrong rights: bind instead of connect (or vice versa)">
+    Verify you're using the correct rights:
+    
+    - `c` for **outbound** connections (clients)
+    - `b` for **inbound** connections (servers)
+    - `bc` for both
+    
+    ```bash
+    # Client: use connect (c)
+    sandboxec --net c:443 --fs rx:/usr -- curl https://example.com
+    
+    # Server: use bind (b)
+    sandboxec --net b:8080 --fs rx:/usr -- python3 -m http.server 8080
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Limitations
+
+<Warning>
+Network rules control **TCP only**. They do NOT control:
+- UDP traffic
+- ICMP (ping)
+- Unix domain sockets
+- Other network protocols
+
+Landlock focuses on TCP bind/connect operations.
+</Warning>
+
+For broader network isolation, consider using firewall rules, network namespaces, or containers.

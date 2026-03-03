@@ -1,0 +1,358 @@
+---
+title: Filesystem Rules
+description: Control filesystem access with allow-list rules
+---
+
+## Overview
+
+Filesystem rules define which paths your sandboxed command can access and what operations are allowed. Rules follow an **allow-list model**: anything not explicitly allowed is denied.
+
+<Warning>
+Filesystem restrictions require Linux kernel 5.13+ with Landlock support enabled.
+</Warning>
+
+## Rule Format
+
+Filesystem rules use the format:
+
+```
+RIGHTS:PATH
+```
+
+- **RIGHTS**: What operations are allowed (see below)
+- **PATH**: The filesystem path to grant access to
+
+### Adding Rules
+
+<CodeGroup>
+```bash CLI flag
+sandboxec --fs rx:/usr --fs rw:/tmp -- your-command
+```
+
+```yaml Configuration file
+fs:
+  - rx:/bin
+  - rx:/usr
+  - rw:/tmp
+  - r:~/documents
+```
+</CodeGroup>
+
+## Filesystem Rights
+
+All available filesystem rights:
+
+<ParamField path="read" type="r">
+  Read-only access. Allows reading files and listing directories.
+  
+  ```bash
+  sandboxec --fs r:/etc -- cat /etc/os-release
+  ```
+  
+  **Permissions granted:**
+  - Read file contents
+  - List directory contents
+  - Stat files and directories
+</ParamField>
+
+<ParamField path="read_exec" type="rx">
+  Read and execute access. Most common for system binaries and libraries.
+  
+  ```bash
+  sandboxec --fs rx:/usr -- /usr/bin/id
+  ```
+  
+  **Permissions granted:**
+  - All `read` permissions
+  - Execute binaries
+  - Load shared libraries
+</ParamField>
+
+<ParamField path="write" type="w">
+  Write-only access. Allows creating, modifying, and deleting files.
+  
+  ```bash
+  sandboxec --fs w:/tmp -- touch /tmp/output.txt
+  ```
+  
+  **Permissions granted:**
+  - Create files and directories
+  - Modify file contents
+  - Delete files and directories
+  - Rename files
+  
+  <Note>
+  Write-only access does not include read permissions. Use `rw` if you need both.
+  </Note>
+</ParamField>
+
+<ParamField path="read_write" type="rw">
+  Read and write access. Common for working directories and temporary storage.
+  
+  ```bash
+  sandboxec --fs rx:/usr --fs rw:/tmp -- your-command
+  ```
+  
+  **Permissions granted:**
+  - All `read` permissions
+  - All `write` permissions
+</ParamField>
+
+<ParamField path="read_write_exec" type="rwx">
+  Full filesystem access. Use sparingly.
+  
+  ```bash
+  sandboxec --fs rwx:/opt/project -- build-tool
+  ```
+  
+  **Permissions granted:**
+  - All `read` permissions
+  - All `write` permissions
+  - All `exec` permissions
+  
+  <Warning>
+  This grants full control over the path. Consider using more restrictive rights when possible.
+  </Warning>
+</ParamField>
+
+## Path Expansion
+
+sandboxec automatically expands special path syntax:
+
+### Environment Variables
+
+Environment variables are expanded using `$VAR` or `${VAR}` syntax:
+
+```bash
+sandboxec --fs rw:$PWD -- ls -la
+sandboxec --fs rx:$HOME/.local/bin -- my-tool
+```
+
+<CodeGroup>
+```bash $PWD (current directory)
+sandboxec --fs rx:/usr --fs rw:$PWD -- your-command
+```
+
+```bash $HOME (home directory)
+sandboxec --fs r:$HOME/.config/app -- your-command
+```
+
+```bash Any variable
+sandboxec --fs rw:${WORKSPACE}/output -- your-command
+```
+</CodeGroup>
+
+### Tilde Expansion
+
+The tilde `~` expands to your home directory:
+
+```bash
+sandboxec --fs r:~/documents -- your-command
+sandboxec --fs rw:~/.cache/app -- your-command
+```
+
+<Note>
+Path expansion happens before rules are applied. If expansion fails (e.g., HOME not set), sandboxec will return an error.
+</Note>
+
+## Common Patterns
+
+### System Binaries
+
+Most commands need to execute system binaries and load libraries:
+
+```bash
+sandboxec --fs rx:/bin --fs rx:/usr --fs rx:/lib --fs rx:/usr/lib -- your-command
+```
+
+<Tip>
+Use `--unsafe-host-runtime` to automatically include runtime paths, but note the security and performance tradeoffs.
+</Tip>
+
+### Working Directory Access
+
+Grant read/write access to the current project:
+
+```bash
+sandboxec --fs rx:/usr --fs rw:$PWD -- build-tool
+```
+
+### Temporary Storage
+
+Allow temporary file creation:
+
+```bash
+sandboxec --fs rx:/usr --fs rw:/tmp -- your-command
+```
+
+### Configuration Files
+
+Read application config without write access:
+
+```bash
+sandboxec --fs rx:/usr --fs r:/etc/app --fs r:~/.config/app -- your-command
+```
+
+### Mixed Permissions
+
+Combine different rights for different paths:
+
+```bash
+sandboxec \
+  --fs rx:/usr \
+  --fs rx:/bin \
+  --fs r:/etc \
+  --fs rw:$PWD \
+  --fs rw:/tmp \
+  -- your-build-tool
+```
+
+## Real-World Examples
+
+<CodeGroup>
+```bash Build tool
+# Allow binary execution, working directory writes, temp files, and HTTPS
+sandboxec \
+  --fs rx:/usr \
+  --fs rw:$PWD \
+  --fs rw:/tmp \
+  --net c:443 \
+  -- npm install
+```
+
+```bash Static site generator
+# Read content, write output, execute binaries
+sandboxec \
+  --fs rx:/usr \
+  --fs r:$PWD/content \
+  --fs rw:$PWD/public \
+  -- hugo build
+```
+
+```bash Testing untrusted script
+# Minimal access: only script directory and temp
+sandboxec \
+  --fs rx:/usr \
+  --fs r:$PWD/script.sh \
+  --fs rw:/tmp/sandbox-output \
+  -- bash script.sh
+```
+
+```bash Container-free CI job
+# Full workspace access for build artifacts
+sandboxec \
+  --unsafe-host-runtime \
+  --fs rw:$PWD \
+  --fs rw:/tmp \
+  --net c:443 \
+  -- make build
+```
+</CodeGroup>
+
+## Rule Behavior
+
+### Allow-List Model
+
+<Warning>
+If a path is not explicitly allowed, it is **completely inaccessible**. The sandboxed process will see it as non-existent or receive permission denied errors.
+</Warning>
+
+```bash
+# This will fail - /etc is not allowed
+sandboxec --fs rx:/usr -- cat /etc/passwd
+# Error: cat: /etc/passwd: Operation not permitted
+
+# This succeeds - /etc is now allowed
+sandboxec --fs rx:/usr --fs r:/etc -- cat /etc/passwd
+```
+
+### Cumulative Rules
+
+Multiple `--fs` flags are cumulative:
+
+```bash
+sandboxec --fs rx:/bin --fs rx:/usr --fs rw:/tmp -- your-command
+```
+
+All three rules apply simultaneously.
+
+### Missing Paths
+
+By default, sandboxec fails if a rule path doesn't exist:
+
+```bash
+sandboxec --fs rx:/nonexistent -- echo hello
+# Error: path does not exist
+```
+
+Use `--ignore-if-missing` to skip nonexistent paths:
+
+```bash
+sandboxec --ignore-if-missing --fs rx:/opt/tool --fs rx:/usr -- your-command
+```
+
+### Runtime Dependencies
+
+<Note>
+Binaries often depend on shared libraries in `/lib`, `/usr/lib`, and related directories. If your command fails with "file not found" errors, add these paths with `rx` rights.
+</Note>
+
+```bash
+# Minimal dependencies for most commands
+sandboxec \
+  --fs rx:/bin \
+  --fs rx:/usr \
+  --fs rx:/lib \
+  --fs rx:/lib64 \
+  --fs rx:/usr/lib \
+  -- your-command
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Command not found or Permission denied">
+    Ensure the binary's directory has `rx` rights:
+    
+    ```bash
+    sandboxec --fs rx:/usr/bin -- /usr/bin/id
+    ```
+    
+    Or use the full path hierarchy:
+    
+    ```bash
+    sandboxec --fs rx:/usr -- /usr/bin/id
+    ```
+  </Accordion>
+  
+  <Accordion title="Shared library errors (libX.so.Y not found)">
+    Add library directories with `rx` rights:
+    
+    ```bash
+    sandboxec --fs rx:/usr --fs rx:/lib --fs rx:/usr/lib -- your-command
+    ```
+    
+    Or use `--unsafe-host-runtime` to auto-detect dependencies:
+    
+    ```bash
+    sandboxec --unsafe-host-runtime --fs rw:$PWD -- your-command
+    ```
+  </Accordion>
+  
+  <Accordion title="Cannot write to allowed path">
+    Verify you're using `w`, `rw`, or `rwx` rights (not just `r` or `rx`):
+    
+    ```bash
+    sandboxec --fs rw:/tmp -- touch /tmp/test.txt
+    ```
+  </Accordion>
+  
+  <Accordion title="Path expansion not working">
+    Ensure environment variables are set before running sandboxec:
+    
+    ```bash
+    echo $PWD  # Verify it's set
+    sandboxec --fs rw:$PWD -- your-command
+    ```
+  </Accordion>
+</AccordionGroup>

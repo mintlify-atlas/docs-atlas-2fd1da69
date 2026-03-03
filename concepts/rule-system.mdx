@@ -1,0 +1,371 @@
+---
+title: Rule System
+description: How to define and combine filesystem and network access rules
+---
+
+## Overview
+
+sandboxec uses an **allow-list rule system**: if a resource isn't explicitly allowed, it's denied. Rules are specified via CLI flags or YAML configuration.
+
+## Filesystem Rules
+
+### Format
+
+```
+RIGHTS:PATH
+```
+
+### Available Rights
+
+<Tabs>
+  <Tab title="Read Only">
+    ```bash
+    --fs read:/path
+    --fs r:/path      # short form
+    ```
+    Allows viewing file contents, listing directories, and reading metadata.
+  </Tab>
+  
+  <Tab title="Read + Execute">
+    ```bash
+    --fs read_exec:/path
+    --fs rx:/path          # short form
+    ```
+    Allows reading files **and** executing binaries. Most common for system paths like `/usr`, `/bin`.
+  </Tab>
+  
+  <Tab title="Write Only">
+    ```bash
+    --fs write:/path
+    --fs w:/path      # short form
+    ```
+    Allows creating, modifying, and deleting files. Rarely used alone.
+  </Tab>
+  
+  <Tab title="Read + Write">
+    ```bash
+    --fs read_write:/path
+    --fs rw:/path          # short form
+    ```
+    Allows reading and writing, but **not** executing. Common for working directories and `/tmp`.
+  </Tab>
+  
+  <Tab title="Full Access">
+    ```bash
+    --fs read_write_exec:/path
+    --fs rwx:/path              # short form
+    ```
+    Allows all operations: read, write, and execute.
+  </Tab>
+</Tabs>
+
+<Note>
+  Filesystem restrictions require **Landlock support** (Linux 5.13+).
+</Note>
+
+### Examples
+
+<CodeGroup>
+```bash Minimal Sandbox
+# Only allow executing system binaries
+sandboxec --fs rx:/usr -- /usr/bin/id
+```
+
+```bash Working Directory
+# Read/write current directory, read system binaries
+sandboxec \
+  --fs rx:/usr \
+  --fs rw:$PWD \
+  -- ./your-script.sh
+```
+
+```bash Shared Libraries
+# Include library paths for dynamically linked binaries
+sandboxec \
+  --fs rx:/bin \
+  --fs rx:/usr \
+  --fs rx:/lib \
+  --fs rx:/usr/lib \
+  --fs rw:/tmp \
+  -- /bin/bash -c 'echo hello'
+```
+</CodeGroup>
+
+## Network Rules
+
+### Format
+
+```
+RIGHTS:PORT
+```
+
+### Available Rights
+
+<Tabs>
+  <Tab title="Bind">
+    ```bash
+    --net bind:8080
+    --net b:8080      # short form
+    ```
+    Allows listening on the specified TCP port (server-side).
+  </Tab>
+  
+  <Tab title="Connect">
+    ```bash
+    --net connect:443
+    --net c:443        # short form
+    ```
+    Allows initiating outbound TCP connections to the specified port.
+  </Tab>
+  
+  <Tab title="Bind + Connect">
+    ```bash
+    --net bind_connect:3000
+    --net bc:3000            # short form
+    ```
+    Allows both listening and connecting on the specified port.
+  </Tab>
+</Tabs>
+
+<Warning>
+  Network restrictions require **Landlock ABI v4+** (typically Linux 6.7+).
+  
+  If your kernel doesn't support network restrictions, use `--best-effort` to continue with filesystem-only restrictions.
+</Warning>
+
+### Examples
+
+<CodeGroup>
+```bash HTTPS Only
+# Allow outbound HTTPS connections only
+sandboxec \
+  --fs rx:/usr \
+  --net c:443 \
+  -- /usr/bin/curl https://example.com
+```
+
+```bash Web Server
+# Allow binding to port 8000 for local development
+sandboxec \
+  --fs rx:/usr \
+  --fs r:$PWD \
+  --net b:8000 \
+  -- python3 -m http.server 8000
+```
+
+```bash Multiple Ports
+# Allow HTTPS and custom API port
+sandboxec \
+  --fs rx:/usr \
+  --net c:443 \
+  --net c:8080 \
+  -- ./api-client
+```
+
+```bash Local Testing
+# Allow connecting to local services
+sandboxec \
+  --fs rx:/usr \
+  --net c:5432 \
+  --net c:6379 \
+  -- ./integration-test
+```
+</CodeGroup>
+
+<Info>
+  Network rules control TCP bind/connect operations. They **do not replace firewalls** or filter UDP/ICMP traffic.
+</Info>
+
+## Rule Behavior
+
+### Cumulative Rules
+
+Multiple `--fs` and `--net` flags are **cumulative** (additive):
+
+```bash
+sandboxec \
+  --fs rx:/bin \
+  --fs rx:/usr \
+  --fs rw:/tmp \
+  --fs rw:$PWD \
+  --net c:443 \
+  --net c:80 \
+  -- ./your-command
+```
+
+This grants:
+- Read+execute on `/bin` and `/usr`
+- Read+write on `/tmp` and current directory
+- Connect on ports 443 and 80
+
+### Allow-List Only
+
+<Warning>
+  **If it's not allowed, it's denied.**
+  
+  There is no way to grant access to "everything except X". You must explicitly list every path and port the command needs.
+</Warning>
+
+<Accordion title="Example: Access Denied">
+  ```bash
+  # This command will fail because /etc is not allowed
+  sandboxec --fs rx:/usr -- cat /etc/passwd
+  ```
+  
+  ```bash
+  # Fix: add the required path
+  sandboxec --fs rx:/usr --fs r:/etc -- cat /etc/passwd
+  ```
+</Accordion>
+
+### Path Granularity
+
+Landlock operates on **path prefixes**. A rule for `/usr` includes everything under `/usr`:
+
+```bash
+# This allows access to:
+# /usr/bin, /usr/lib, /usr/share, /usr/local, etc.
+sandboxec --fs rx:/usr -- /usr/bin/python3
+```
+
+To restrict more granularly:
+
+```bash
+# Only allow /usr/bin, not /usr/lib or /usr/share
+sandboxec --fs rx:/usr/bin -- /usr/bin/id
+```
+
+<Note>
+  Be careful with granular rules: binaries often depend on shared libraries in `/lib`, `/usr/lib`, or other system paths.
+</Note>
+
+## Rule Precedence
+
+### CLI vs Configuration
+
+When using both CLI flags and a YAML config file:
+
+1. **Scalar options** (like `--abi`, `--best-effort`): CLI flags override config values
+2. **Rule arrays** (`--fs`, `--net`): CLI flags **replace** config rules entirely
+
+<Tabs>
+  <Tab title="Config File">
+    ```yaml sandboxec.yaml
+    fs:
+      - rx:/bin
+      - rx:/usr
+    net:
+      - c:443
+    best-effort: true
+    ```
+  </Tab>
+  
+  <Tab title="CLI Overrides">
+    ```bash
+    # This REPLACES fs rules from config
+    sandboxec --config sandboxec.yaml --fs rw:/tmp -- command
+    # Result: only rw:/tmp is active, not rx:/bin or rx:/usr
+    ```
+    
+    ```bash
+    # This keeps fs rules from config, only overrides scalar option
+    sandboxec --config sandboxec.yaml --best-effort=false -- command
+    # Result: fs rules from config apply, best-effort disabled
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+  Setting `--fs` or `--net` on the CLI will **completely replace** the corresponding rules from the config file. To extend config rules, include them manually or use only config-based rules.
+</Warning>
+
+## Common Patterns
+
+### Pattern: System Binaries + Working Directory
+
+```bash
+sandboxec \
+  --fs rx:/usr \
+  --fs rw:$PWD \
+  -- your-command
+```
+
+Allows executing system tools while working in the current directory.
+
+### Pattern: Build Environment
+
+```bash
+sandboxec \
+  --fs rx:/usr \
+  --fs rw:$PWD \
+  --fs rw:/tmp \
+  --net c:443 \
+  -- npm install
+```
+
+Common for package managers that download dependencies over HTTPS.
+
+### Pattern: Host Runtime Dependencies
+
+```bash
+sandboxec \
+  --unsafe-host-runtime \
+  --fs rw:$PWD \
+  --fs rw:/tmp \
+  --net c:443 \
+  -- your-build-command
+```
+
+<Warning>
+  `--unsafe-host-runtime` automatically adds `read_exec` rights for PATH-derived runtime targets and their shared library dependencies.
+  
+  This **weakens least-privilege guarantees** and can increase startup latency (especially for short-lived commands). Use only when necessary.
+</Warning>
+
+### Pattern: Read-Only Analysis
+
+```bash
+sandboxec \
+  --fs rx:/usr \
+  --fs r:$PWD \
+  -- ./static-analyzer
+```
+
+Prevents analysis tools from modifying source code.
+
+## Troubleshooting
+
+### Error: "invalid fs rights"
+
+Check spelling of rights. Valid options:
+- Filesystem: `r`, `rx`, `w`, `rw`, `rwx` (or long forms: `read`, `read_exec`, etc.)
+- Network: `b`, `c`, `bc` (or long forms: `bind`, `connect`, `bind_connect`)
+
+### Error: "permission denied"
+
+<Accordion title="Common Causes">
+  1. **Missing runtime paths**: Add `/usr`, `/lib`, `/usr/lib`, `/etc` as needed
+  2. **Kernel incompatibility**: Check if your kernel supports the requested features
+  3. **Missing dependencies**: Use `--unsafe-host-runtime` or add explicit library paths
+  4. **Network rules on old kernel**: Use `--best-effort` to skip unsupported features
+</Accordion>
+
+### Debugging Strategy
+
+```bash
+# Start with broad access
+sandboxec \
+  --fs rx:/bin \
+  --fs rx:/usr \
+  --fs rx:/lib \
+  --fs rx:/usr/lib \
+  --fs rw:/tmp \
+  --fs rw:$PWD \
+  -- your-command
+
+# Then narrow down to minimal required paths
+```
+
+<Info>
+  Use `--ignore-if-missing` to prevent failures when a rule path doesn't exist (useful for cross-environment configs).
+</Info>

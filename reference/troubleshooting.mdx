@@ -1,0 +1,560 @@
+---
+title: Troubleshooting
+description: Common errors and solutions when using sandboxec
+---
+
+## Overview
+
+This page covers common issues you may encounter when using sandboxec and how to resolve them.
+
+## Common Errors
+
+<Accordion title="Invalid fs rights error">
+  ### Symptom
+  
+  ```bash
+  $ sandboxec --fs invalid:/usr -- echo hello
+  invalid fs rights "invalid" (valid: read|r, read_exec|rx, write|w, read_write|rw, read_write_exec|rwx)
+  ```
+  
+  ### Cause
+  
+  The filesystem rights specification is misspelled or uses an unsupported value.
+  
+  ### Solution
+  
+  Use only the valid filesystem rights:
+  
+  - `read` or `r` - Read-only access
+  - `read_exec` or `rx` - Read and execute access
+  - `write` or `w` - Write-only access
+  - `read_write` or `rw` - Read and write access
+  - `read_write_exec` or `rwx` - Full access
+  
+  **Correct usage:**
+  ```bash
+  sandboxec --fs rx:/usr -- echo hello
+  sandboxec --fs rw:/tmp -- touch /tmp/file
+  ```
+  
+  See [Rule Format](/reference/rule-format) for complete details.
+</Accordion>
+
+<Accordion title="Invalid network rights error">
+  ### Symptom
+  
+  ```bash
+  $ sandboxec --net invalid:443 -- curl https://example.com
+  invalid network rights "invalid" (valid: bind|b, connect|c, bind_connect|bc)
+  ```
+  
+  ### Cause
+  
+  The network rights specification is misspelled or uses an unsupported value.
+  
+  ### Solution
+  
+  Use only the valid network rights:
+  
+  - `bind` or `b` - Allow binding to a port
+  - `connect` or `c` - Allow connecting to a port
+  - `bind_connect` or `bc` - Allow both bind and connect
+  
+  **Correct usage:**
+  ```bash
+  sandboxec --fs rx:/usr --net c:443 -- curl https://example.com
+  sandboxec --fs rx:/usr --net b:8080 -- ./server
+  ```
+  
+  See [Rule Format](/reference/rule-format#network-rules) for complete details.
+</Accordion>
+
+<Accordion title="Permission denied errors">
+  ### Symptom
+  
+  The sandboxed command fails with permission denied errors:
+  
+  ```bash
+  $ sandboxec --fs rx:/usr -- /bin/cat /etc/passwd
+  cat: /etc/passwd: Permission denied
+  ```
+  
+  Or:
+  
+  ```bash
+  $ sandboxec --fs rx:/usr -- /bin/ls /tmp
+  ls: cannot access '/tmp': Permission denied
+  ```
+  
+  ### Cause
+  
+  The command is trying to access a path that is not included in your filesystem rules. Remember: sandboxec uses an **allow-list** approach - if a path isn't explicitly allowed, it's denied.
+  
+  ### Solution
+  
+  Add the missing path to your filesystem rules:
+  
+  ```bash
+  # Add read access to /etc
+  sandboxec --fs rx:/usr --fs r:/etc -- /bin/cat /etc/passwd
+  
+  # Add access to /tmp
+  sandboxec --fs rx:/usr --fs rw:/tmp -- /bin/ls /tmp
+  ```
+  
+  ### Common Missing Paths
+  
+  Most commands require access to:
+  
+  - **`/usr`** - System binaries and libraries
+  - **`/lib`** or **`/lib64`** - Shared libraries
+  - **`/bin`** - Essential binaries
+  - **`/etc`** - Configuration files (DNS, SSL certificates, etc.)
+  - **`/tmp`** - Temporary files
+  - **`$PWD`** - Current working directory
+  
+  **Common pattern for most commands:**
+  ```bash
+  sandboxec \
+    --fs rx:/usr \
+    --fs rx:/lib \
+    --fs rx:/lib64 \
+    --fs r:/etc \
+    --fs rw:/tmp \
+    --fs rw:$PWD \
+    -- your-command
+  ```
+</Accordion>
+
+<Accordion title="Command not found (exit code 127)">
+  ### Symptom
+  
+  ```bash
+  $ sandboxec --fs rx:/usr/local -- /usr/bin/node
+  $ echo $?
+  127
+  ```
+  
+  ### Cause
+  
+  The command binary exists on the system, but the sandboxed process cannot access it because the path is not included in the filesystem rules.
+  
+  ### Solution
+  
+  Add the directory containing the binary to your filesystem rules with `rx` (read-execute) rights:
+  
+  ```bash
+  # Allow access to /usr/bin
+  sandboxec --fs rx:/usr -- /usr/bin/node --version
+  ```
+  
+  ### Finding the Binary Path
+  
+  Use `which` to find the binary location:
+  
+  ```bash
+  $ which node
+  /usr/bin/node
+  
+  # Then add that directory to your rules
+  sandboxec --fs rx:/usr -- node --version
+  ```
+</Accordion>
+
+<Accordion title="Shared library errors">
+  ### Symptom
+  
+  ```bash
+  $ sandboxec --fs rx:/usr/bin -- /usr/bin/python3
+  error while loading shared libraries: libpython3.so: cannot open shared object file: Permission denied
+  ```
+  
+  ### Cause
+  
+  The binary requires shared libraries (`.so` files) that are not accessible in the sandbox.
+  
+  ### Solution
+  
+  Add library paths to your filesystem rules:
+  
+  ```bash
+  sandboxec \
+    --fs rx:/usr \
+    --fs rx:/lib \
+    --fs rx:/lib64 \
+    -- /usr/bin/python3
+  ```
+  
+  ### Alternative: Use --unsafe-host-runtime
+  
+  For complex dependency chains, use `--unsafe-host-runtime` to automatically discover and allow runtime dependencies:
+  
+  ```bash
+  sandboxec --unsafe-host-runtime --fs rw:$PWD -- /usr/bin/python3 script.py
+  ```
+  
+  <Warning>
+    `--unsafe-host-runtime` weakens security guarantees and increases startup latency. Use only when necessary.
+  </Warning>
+</Accordion>
+
+## Landlock Failures
+
+<Accordion title="Kernel too old for network restrictions">
+  ### Symptom
+  
+  ```bash
+  $ sandboxec --fs rx:/usr --net c:443 -- curl https://example.com
+  Error: Landlock ABI v4+ required for network restrictions
+  ```
+  
+  ### Cause
+  
+  Your kernel version doesn't support network restrictions. Network restrictions require Landlock ABI v4+, which is typically available in Linux 6.7+.
+  
+  ### Check Your Kernel Version
+  
+  ```bash
+  uname -r
+  ```
+  
+  ### Solutions
+  
+  #### Option 1: Use --best-effort
+  
+  Continue with filesystem-only sandboxing:
+  
+  ```bash
+  sandboxec --best-effort --fs rx:/usr --net c:443 -- curl https://example.com
+  ```
+  
+  With `--best-effort`, sandboxec will:
+  - Apply filesystem restrictions (if supported)
+  - Skip network restrictions (if not supported)
+  - Continue execution without failing
+  
+  #### Option 2: Remove network rules
+  
+  Use filesystem restrictions only:
+  
+  ```bash
+  sandboxec --fs rx:/usr -- curl https://example.com
+  ```
+  
+  #### Option 3: Upgrade kernel
+  
+  Upgrade to Linux 6.7+ for full network restriction support.
+</Accordion>
+
+<Accordion title="Kernel lacks Landlock support entirely">
+  ### Symptom
+  
+  ```bash
+  $ sandboxec --fs rx:/usr -- echo hello
+  Error: Landlock not supported by kernel
+  ```
+  
+  ### Cause
+  
+  Your kernel doesn't have Landlock support enabled or is older than Linux 5.13.
+  
+  ### Check Requirements
+  
+  ```bash
+  # Check kernel version
+  uname -r
+  
+  # Should be >= 5.13 for filesystem restrictions
+  ```
+  
+  ### Solutions
+  
+  1. **Upgrade kernel** to 5.13 or newer
+  2. **Enable Landlock** in kernel config (if building custom kernel)
+  3. **Use --best-effort** to attempt graceful degradation (may still fail on very old kernels)
+  
+  ### Kernel Compatibility Table
+  
+  | Feature | Landlock ABI | Minimum Kernel |
+  |---------|--------------|----------------|
+  | Filesystem restrictions | v1+ | 5.13+ |
+  | Network restrictions | v4+ | 6.7+ |
+  | Scoped IPC restrictions | v6+ | Newer kernels |
+</Accordion>
+
+<Accordion title="Scoped restrictions not supported">
+  ### Symptom
+  
+  ```bash
+  $ sandboxec --restrict-scoped --fs rx:/usr -- echo hello
+  Error: Landlock ABI v6+ required for scoped restrictions
+  ```
+  
+  ### Cause
+  
+  The `--restrict-scoped` flag requires Landlock ABI v6+, which is only available on newer kernels.
+  
+  ### Solutions
+  
+  #### Option 1: Remove --restrict-scoped
+  
+  ```bash
+  sandboxec --fs rx:/usr -- echo hello
+  ```
+  
+  #### Option 2: Use --best-effort
+  
+  ```bash
+  sandboxec --best-effort --restrict-scoped --fs rx:/usr -- echo hello
+  ```
+  
+  With `--best-effort`, scoped restrictions will be skipped if not supported.
+  
+  #### Option 3: Upgrade kernel
+  
+  Upgrade to a kernel with Landlock ABI v6+ support.
+</Accordion>
+
+## When to Use --best-effort
+
+<Accordion title="Understanding --best-effort mode">
+  ### What It Does
+  
+  The `--best-effort` flag tells sandboxec to continue execution even when the kernel lacks support for requested features.
+  
+  ### When to Use It
+  
+  Use `--best-effort` when:
+  
+  - Running on **older kernels** without full Landlock support
+  - You want **some sandboxing** even if not all features are available
+  - **Portability** across different kernel versions is important
+  - You're **testing** sandbox configurations
+  
+  ### When NOT to Use It
+  
+  Avoid `--best-effort` when:
+  
+  - **Security is critical** - you need all restrictions to be enforced
+  - **Compliance requires** full sandboxing
+  - You need **guaranteed isolation**
+  
+  ### Example Usage
+  
+  ```bash
+  # Will apply filesystem restrictions but skip network restrictions on old kernels
+  sandboxec --best-effort --fs rx:/usr --net c:443 -- curl https://example.com
+  ```
+  
+  <Warning>
+    With `--best-effort`, some security restrictions may not be applied. Verify that critical restrictions are supported on your target kernel.
+  </Warning>
+</Accordion>
+
+## Debugging Missing Dependencies
+
+<Accordion title="How to debug missing dependencies">
+  ### Strategy 1: Run Without Sandbox First
+  
+  Verify the command works without sandboxing:
+  
+  ```bash
+  # Test without sandbox
+  /usr/bin/python3 script.py
+  
+  # Then add sandbox incrementally
+  sandboxec --fs rx:/usr --fs rx:/lib -- /usr/bin/python3 script.py
+  ```
+  
+  ### Strategy 2: Use strace
+  
+  Identify what files the command accesses:
+  
+  ```bash
+  # Run with strace to see all file access
+  strace -e trace=openat,access /usr/bin/python3 script.py 2>&1 | grep -E '(ENOENT|EACCES)'
+  ```
+  
+  This shows which files the command tries to access that are missing or denied.
+  
+  ### Strategy 3: Start Permissive, Then Restrict
+  
+  Begin with broad permissions and narrow down:
+  
+  ```bash
+  # Start with broad access
+  sandboxec --fs rx:/ --fs rw:/tmp -- your-command
+  
+  # Then restrict to specific paths
+  sandboxec --fs rx:/usr --fs rx:/lib --fs rw:/tmp --fs rw:$PWD -- your-command
+  ```
+  
+  ### Strategy 4: Check ldd for Shared Libraries
+  
+  Find required shared libraries:
+  
+  ```bash
+  $ ldd /usr/bin/python3
+  linux-vdso.so.1 (0x00007ffd8e9f0000)
+  libpython3.10.so.1.0 => /lib/x86_64-linux-gnu/libpython3.10.so.1.0
+  libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6
+  ...
+  ```
+  
+  Then ensure all library directories are included:
+  
+  ```bash
+  sandboxec --fs rx:/usr --fs rx:/lib/x86_64-linux-gnu -- /usr/bin/python3
+  ```
+  
+  ### Strategy 5: Use --unsafe-host-runtime
+  
+  Let sandboxec automatically discover dependencies:
+  
+  ```bash
+  sandboxec --unsafe-host-runtime --fs rw:$PWD -- your-command
+  ```
+  
+  This adds `read_exec` rights for:
+  - All PATH-derived runtime targets
+  - Resolved shared-library dependencies
+  - Executable entries
+  
+  <Note>
+    This is useful for debugging but weakens security. Once you identify the required paths, switch to explicit rules.
+  </Note>
+</Accordion>
+
+<Accordion title="Common dependency patterns by language">
+  ### Python
+  
+  ```bash
+  sandboxec \
+    --fs rx:/usr \
+    --fs rx:/lib \
+    --fs rx:/lib64 \
+    --fs r:/etc \
+    --fs rw:$PWD \
+    --fs rw:/tmp \
+    -- python3 script.py
+  ```
+  
+  ### Node.js / npm
+  
+  ```bash
+  sandboxec \
+    --fs rx:/usr \
+    --fs rx:/lib \
+    --fs rw:$PWD \
+    --fs rw:/tmp \
+    --net c:443 \
+    -- npm install
+  ```
+  
+  ### Go programs
+  
+  ```bash
+  # Go binaries are often statically linked
+  sandboxec --fs rw:$PWD --fs rw:/tmp -- ./go-binary
+  ```
+  
+  ### Rust programs
+  
+  ```bash
+  # Similar to Go, often statically linked
+  sandboxec --fs rw:$PWD -- ./rust-binary
+  ```
+  
+  ### Shell scripts
+  
+  ```bash
+  sandboxec \
+    --fs rx:/usr \
+    --fs rx:/bin \
+    --fs rx:/lib \
+    --fs r:/etc \
+    --fs rw:$PWD \
+    -- bash script.sh
+  ```
+</Accordion>
+
+## Configuration Issues
+
+<Accordion title="Config and named-config conflict">
+  ### Symptom
+  
+  ```bash
+  $ sandboxec --config ./sandboxec.yaml --named-config agents/claude -- echo hello
+  --config and --named-config cannot be used together
+  ```
+  
+  ### Solution
+  
+  Use only one config source:
+  
+  ```bash
+  # Use explicit config file
+  sandboxec --config ./sandboxec.yaml -- echo hello
+  
+  # OR use named config
+  sandboxec --named-config agents/claude -- echo hello
+  ```
+</Accordion>
+
+<Accordion title="Invalid YAML syntax in config file">
+  ### Symptom
+  
+  ```bash
+  $ sandboxec --config ./sandboxec.yaml -- echo hello
+  Error: yaml: line 5: mapping values are not allowed in this context
+  ```
+  
+  ### Solution
+  
+  Check your YAML syntax. Common issues:
+  
+  - **Indentation errors** (use spaces, not tabs)
+  - **Missing colons**
+  - **Incorrect list syntax**
+  
+  **Correct format:**
+  ```yaml
+  abi: 6
+  best-effort: false
+  fs:
+    - rx:/usr
+    - rw:/tmp
+  net:
+    - c:443
+  ```
+</Accordion>
+
+## Getting Help
+
+If you're still experiencing issues:
+
+1. **Check kernel version and Landlock support:**
+   ```bash
+   uname -r
+   ```
+
+2. **Review error messages carefully** - sandboxec provides detailed error descriptions
+
+3. **Try `--best-effort`** to isolate compatibility issues:
+   ```bash
+   sandboxec --best-effort --fs rx:/usr -- your-command
+   ```
+
+4. **Use `--unsafe-host-runtime`** to test if the issue is dependency-related:
+   ```bash
+   sandboxec --unsafe-host-runtime --fs rw:$PWD -- your-command
+   ```
+
+5. **File an issue** at [github.com/sandboxec/sandboxec](https://github.com/sandboxec/sandboxec/issues) with:
+   - Kernel version (`uname -r`)
+   - Complete command and error message
+   - Config file (if using one)
+
+<Info>
+  For more information, see the [CLI Options](/reference/cli-options) and [Rule Format](/reference/rule-format) reference pages.
+</Info>

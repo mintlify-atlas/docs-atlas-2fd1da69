@@ -1,0 +1,246 @@
+---
+title: Command Reference
+description: Complete command-line reference for sandboxec
+---
+
+## Basic Usage
+
+The basic syntax for running sandboxec is:
+
+```bash
+sandboxec [OPTIONS] [COMMAND [ARG...]]
+```
+
+<Note>
+The `--` separator is optional but recommended when passing arguments to the wrapped command to avoid ambiguity with sandboxec's own flags.
+</Note>
+
+## Command Structure
+
+sandboxec wraps your target command and applies sandbox restrictions before execution:
+
+1. Parse CLI flags and configuration
+2. Load and merge configuration from files (if any)
+3. Apply Landlock restrictions based on rules
+4. Execute the target command with restrictions inherited by all child processes
+5. Return the exit code of the wrapped command
+
+<CodeGroup>
+```bash Simple command
+sandboxec --fs rx:/usr /usr/bin/echo hello
+```
+
+```bash With separator
+sandboxec --fs rx:/usr -- /usr/bin/ls /usr
+```
+
+```bash With arguments
+sandboxec --fs rx:/usr --fs rw:/tmp -- /bin/ls -la /tmp
+```
+</CodeGroup>
+
+## Passing Arguments
+
+There are two ways to pass arguments to your wrapped command:
+
+### Without `--` separator
+
+```bash
+sandboxec --fs rx:/usr /usr/bin/echo hello world
+```
+
+All arguments after the command path are passed to the wrapped command.
+
+### With `--` separator (recommended)
+
+```bash
+sandboxec --fs rx:/usr -- /usr/bin/echo hello world
+```
+
+The `--` explicitly marks the end of sandboxec options. Everything after `--` is treated as the command and its arguments.
+
+<Tip>
+Use `--` when your wrapped command accepts flags that might conflict with sandboxec's flags, or when passing complex arguments.
+</Tip>
+
+## Command-Line Flags
+
+### Core Options
+
+<ParamField path="-c, --config" type="string">
+  Path to YAML configuration file. Can be a local path or HTTP(S) URL.
+  
+  ```bash
+  sandboxec --config ./sandboxec.yaml -- /bin/echo ok
+  sandboxec --config https://example.com/config.yaml -- /bin/echo ok
+  ```
+</ParamField>
+
+<ParamField path="-C, --named-config" type="string">
+  Named config profile from the [sandboxec/profiles](https://github.com/sandboxec/profiles) repository.
+  
+  ```bash
+  sandboxec --named-config agents/claude -- claude --dangerously-skip-permissions
+  ```
+</ParamField>
+
+<ParamField path="-f, --fs" type="RIGHTS:PATH">
+  Add filesystem rule. Can be specified multiple times. See [Filesystem Rules](/usage/filesystem-rules) for details.
+  
+  ```bash
+  sandboxec --fs rx:/usr --fs rw:/tmp -- your-command
+  ```
+</ParamField>
+
+<ParamField path="-n, --net" type="RIGHTS:PORT">
+  Add network rule. Can be specified multiple times. See [Network Rules](/usage/network-rules) for details.
+  
+  ```bash
+  sandboxec --fs rx:/usr --net c:443 -- /usr/bin/curl https://example.com
+  ```
+</ParamField>
+
+### Advanced Options
+
+<ParamField path="--abi" type="int" default="0">
+  Force a specific Landlock ABI version (1-6). `0` means use the highest available version.
+  
+  ```bash
+  sandboxec --abi 4 --fs rx:/usr --net c:443 -- your-command
+  ```
+</ParamField>
+
+<ParamField path="--best-effort" type="boolean" default="false">
+  Continue even if the kernel lacks support for some features. Degrades gracefully instead of failing.
+  
+  ```bash
+  sandboxec --best-effort --net c:443 --fs rx:/usr -- your-command
+  ```
+</ParamField>
+
+<ParamField path="--ignore-if-missing" type="boolean" default="false">
+  Do not fail if a filesystem rule path does not exist.
+  
+  ```bash
+  sandboxec --ignore-if-missing --fs rx:/opt/tool -- your-command
+  ```
+</ParamField>
+
+<ParamField path="--restrict-scoped" type="boolean" default="false">
+  Enable scoped IPC restrictions. Requires Landlock ABI v6+.
+  
+  ```bash
+  sandboxec --restrict-scoped --fs rx:/usr -- your-command
+  ```
+</ParamField>
+
+<ParamField path="--unsafe-host-runtime" type="boolean" default="false">
+  Automatically add `read_exec` rights for host runtime paths and their shared library dependencies.
+  
+  <Warning>
+  This weakens least-privilege guarantees and can significantly increase startup latency for short-lived commands.
+  </Warning>
+  
+  ```bash
+  sandboxec --unsafe-host-runtime --fs rw:$PWD -- your-build-command
+  ```
+</ParamField>
+
+<ParamField path="-m, --mode" type="string" default="run">
+  Execution mode: `run` or `mcp`.
+  
+  - `run`: Execute a single command (default)
+  - `mcp`: Start as an MCP server
+  
+  ```bash
+  sandboxec --mode mcp --fs rx:/usr --fs rw:/tmp --net c:443
+  ```
+  
+  <Note>
+  In `mcp` mode, no command arguments are accepted. The MCP server provides an `exec` tool for running commands.
+  </Note>
+</ParamField>
+
+### Utility Flags
+
+<ParamField path="-V, --version" type="boolean">
+  Show version information and exit.
+  
+  ```bash
+  sandboxec --version
+  ```
+</ParamField>
+
+<ParamField path="-h, --help" type="boolean">
+  Show help message and exit.
+  
+  ```bash
+  sandboxec --help
+  ```
+</ParamField>
+
+## Exit Codes
+
+sandboxec returns different exit codes based on execution results:
+
+<ResponseField name="0" type="success">
+  The wrapped command succeeded (exited with code 0).
+</ResponseField>
+
+<ResponseField name="N" type="forward">
+  The wrapped command exited with code `N`. sandboxec forwards the exit code.
+</ResponseField>
+
+<ResponseField name="1" type="error">
+  sandboxec itself failed (parsing error, configuration error, Landlock failure, missing command, etc.).
+</ResponseField>
+
+## Examples
+
+<CodeGroup>
+```bash Minimal
+sandboxec --fs rx:/usr -- /usr/bin/id
+```
+
+```bash Multiple rules
+sandboxec \
+  --fs rx:/bin \
+  --fs rx:/usr \
+  --fs rw:/tmp \
+  -- /bin/ls /tmp
+```
+
+```bash With network
+sandboxec --fs rx:/usr --net c:443 -- /usr/bin/curl https://example.com
+```
+
+```bash Using config
+sandboxec --config ./sandboxec.yaml -- /bin/echo ok
+```
+
+```bash Named profile
+sandboxec --named-config agents/claude -- claude --dangerously-skip-permissions
+```
+</CodeGroup>
+
+## MCP Mode
+
+When running in MCP mode, sandboxec provides a Model Context Protocol server with an `exec` tool:
+
+```bash
+sandboxec --mode mcp --fs rx:/usr --fs rw:/tmp --net c:443
+```
+
+The MCP server provides:
+
+<ResponseField name="exec" type="tool">
+  Execute a command and return `stdout`, `stderr`, and `exit_code`.
+  
+  **Input parameters:**
+  - `command` (required): The command to execute
+  - `args` (optional): Array of arguments
+  
+  The command runs with the same sandbox policy specified via CLI flags or configuration.
+</ResponseField>
+
+See [Examples](/usage/examples#mcp-configuration) for MCP client configuration.

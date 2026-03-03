@@ -1,0 +1,451 @@
+---
+title: Configuration
+description: YAML configuration files and precedence rules
+---
+
+## Overview
+
+sandboxec supports YAML configuration files to define sandbox policies. Configuration is useful for:
+
+- Reusing policies across multiple commands
+- Sharing security profiles with teams
+- Keeping complex rules out of command lines
+- Version controlling sandbox policies
+
+<Note>
+Configuration is YAML-only. Other formats are not supported.
+</Note>
+
+## YAML Structure
+
+A complete configuration file with all available options:
+
+```yaml sandboxec.yaml
+abi: 6
+best-effort: false
+ignore-if-missing: false
+restrict-scoped: false
+unsafe-host-runtime: false
+mode: run
+fs:
+  - rx:/bin
+  - rx:/usr
+  - rx:/lib
+  - rx:/usr/lib
+  - rw:/tmp
+  - rw:~/workspace
+net:
+  - c:443
+  - c:80
+```
+
+### Configuration Keys
+
+<ParamField path="abi" type="int" default="0">
+  Force a specific Landlock ABI version (1-6). `0` means use the highest available.
+  
+  ```yaml
+  abi: 4
+  ```
+</ParamField>
+
+<ParamField path="best-effort" type="boolean" default="false">
+  Continue even if the kernel lacks support for some features.
+  
+  ```yaml
+  best-effort: true
+  ```
+</ParamField>
+
+<ParamField path="ignore-if-missing" type="boolean" default="false">
+  Do not fail if a filesystem rule path does not exist.
+  
+  ```yaml
+  ignore-if-missing: true
+  ```
+</ParamField>
+
+<ParamField path="restrict-scoped" type="boolean" default="false">
+  Enable scoped IPC restrictions (requires ABI v6+).
+  
+  ```yaml
+  restrict-scoped: true
+  ```
+</ParamField>
+
+<ParamField path="unsafe-host-runtime" type="boolean" default="false">
+  Automatically add `read_exec` rights for host runtime paths.
+  
+  ```yaml
+  unsafe-host-runtime: false
+  ```
+</ParamField>
+
+<ParamField path="mode" type="string" default="run">
+  Execution mode: `run` or `mcp`.
+  
+  ```yaml
+  mode: run
+  ```
+</ParamField>
+
+<ParamField path="fs" type="array">
+  List of filesystem rules in `RIGHTS:PATH` format.
+  
+  ```yaml
+  fs:
+    - rx:/usr
+    - rw:$PWD
+    - r:/etc
+  ```
+</ParamField>
+
+<ParamField path="net" type="array">
+  List of network rules in `RIGHTS:PORT` format.
+  
+  ```yaml
+  net:
+    - c:443
+    - b:8080
+  ```
+</ParamField>
+
+## Config File Lookup
+
+sandboxec searches for configuration files in this order:
+
+### 1. Explicit `--config` flag
+
+When you specify `--config`, that file is used:
+
+```bash
+sandboxec --config ./custom.yaml -- your-command
+```
+
+The path can be:
+- **Relative**: `./sandboxec.yaml`, `../configs/sandbox.yaml`
+- **Absolute**: `/etc/sandboxec/policy.yaml`
+- **Remote URL**: `https://example.com/config.yaml`
+
+<CodeGroup>
+```bash Local file
+sandboxec --config ./sandboxec.yaml -- echo ok
+```
+
+```bash Remote URL
+sandboxec --config https://raw.githubusercontent.com/org/repo/main/sandbox.yaml -- echo ok
+```
+</CodeGroup>
+
+### 2. Named config with `--named-config`
+
+Named configs map to the [sandboxec/profiles](https://github.com/sandboxec/profiles) repository:
+
+```bash
+sandboxec --named-config agents/claude -- claude --dangerously-skip-permissions
+```
+
+This resolves to:
+```
+https://github.com/sandboxec/profiles/raw/refs/heads/based/agents/claude.yaml
+```
+
+<Tip>
+See the [profiles repository](https://github.com/sandboxec/profiles) for ready-made configurations for popular tools and use cases.
+</Tip>
+
+### 3. Automatic discovery
+
+If no `--config` or `--named-config` is specified, sandboxec searches for `sandboxec.yaml` or `sandboxec.yml` in:
+
+1. `$XDG_CONFIG_HOME/sandboxec/` (if `$XDG_CONFIG_HOME` is set)
+2. `$HOME/.config/sandboxec/`
+3. `/etc/sandboxec/`
+
+<CodeGroup>
+```bash User config
+~/.config/sandboxec/sandboxec.yaml
+```
+
+```bash XDG config
+$XDG_CONFIG_HOME/sandboxec/sandboxec.yaml
+```
+
+```bash System config
+/etc/sandboxec/sandboxec.yaml
+```
+</CodeGroup>
+
+<Note>
+The first config file found is used. If no config is found, defaults are applied.
+</Note>
+
+## Precedence Rules
+
+When both configuration files and CLI flags are present, precedence works as follows:
+
+### Mutual Exclusion
+
+<Warning>
+`--config` and `--named-config` **cannot** be used together. sandboxec will exit with an error if both are specified.
+</Warning>
+
+```bash
+# Error: conflicting flags
+sandboxec --config ./local.yaml --named-config agents/claude -- your-command
+```
+
+### Scalar Options
+
+CLI flags **override** config file values:
+
+```yaml sandboxec.yaml
+abi: 4
+best-effort: false
+```
+
+```bash
+# CLI flag wins: abi=6, best-effort=true
+sandboxec --config sandboxec.yaml --abi 6 --best-effort -- your-command
+```
+
+### Rule Lists (`fs` and `net`)
+
+Rule behavior differs:
+
+<Accordion title="When CLI flags are provided">
+  CLI flags **replace** the config entirely:
+  
+  ```yaml sandboxec.yaml
+  fs:
+    - rx:/usr
+    - rw:/tmp
+  ```
+  
+  ```bash
+  # Only --fs rx:/bin is used (config fs rules are ignored)
+  sandboxec --config sandboxec.yaml --fs rx:/bin -- your-command
+  ```
+</Accordion>
+
+<Accordion title="When CLI flags are NOT provided">
+  Config rules are used:
+  
+  ```yaml sandboxec.yaml
+  fs:
+    - rx:/usr
+    - rw:/tmp
+  ```
+  
+  ```bash
+  # Uses fs rules from config
+  sandboxec --config sandboxec.yaml -- your-command
+  ```
+</Accordion>
+
+### Precedence Summary
+
+| Option | Behavior |
+|--------|----------|
+| `abi`, `best-effort`, etc. | CLI flag overrides config |
+| `fs` | CLI flags replace config list |
+| `net` | CLI flags replace config list |
+
+## Remote Configuration
+
+sandboxec can fetch configuration from HTTP(S) URLs:
+
+```bash
+sandboxec --config https://example.com/sandboxec.yaml -- your-command
+```
+
+<Warning>
+Remote configs are fetched over the network. Ensure URLs are trusted and use HTTPS when possible.
+</Warning>
+
+### URL Requirements
+
+- Must use `http://` or `https://` scheme
+- Must serve valid YAML content
+- Must have `.yaml` or `.yml` extension in the URL path
+- Must return HTTP 200 status
+
+### GitHub Raw URLs
+
+Common pattern for sharing configs via GitHub:
+
+```bash
+sandboxec --config https://raw.githubusercontent.com/user/repo/main/sandboxec.yaml -- your-command
+```
+
+## Example Profiles
+
+### Development Profile
+
+Permissive policy for local development:
+
+```yaml dev.yaml
+abi: 6
+best-effort: true
+ignore-if-missing: true
+unsafe-host-runtime: true
+fs:
+  - rw:~/workspace
+  - rw:/tmp
+net:
+  - c:443
+  - c:80
+  - b:3000
+  - b:8080
+```
+
+```bash
+sandboxec --config dev.yaml -- npm run dev
+```
+
+### CI Build Profile
+
+Restricted policy for CI environments:
+
+```yaml ci.yaml
+abi: 6
+best-effort: true
+ignore-if-missing: false
+restrict-scoped: false
+unsafe-host-runtime: false
+fs:
+  - rx:/bin
+  - rx:/usr
+  - rx:/lib
+  - rx:/usr/lib
+  - rw:/tmp
+  - rw:$PWD
+net:
+  - c:443
+```
+
+```bash
+sandboxec --config ci.yaml -- make build
+```
+
+### Minimal Network Client
+
+Basic outbound HTTPS only:
+
+```yaml https-client.yaml
+fs:
+  - rx:/usr
+  - rx:/lib
+  - rx:/usr/lib
+  - r:/etc
+net:
+  - c:443
+```
+
+```bash
+sandboxec --config https-client.yaml -- curl https://api.example.com
+```
+
+### Web Server Profile
+
+Local server with no outbound access:
+
+```yaml web-server.yaml
+fs:
+  - rx:/usr
+  - r:$PWD/static
+  - rw:$PWD/logs
+net:
+  - b:8080
+```
+
+```bash
+sandboxec --config web-server.yaml -- python3 -m http.server 8080
+```
+
+### MCP Server Profile
+
+Configuration for running as an MCP server:
+
+```yaml mcp.yaml
+mode: mcp
+fs:
+  - rx:/usr
+  - rw:/tmp
+  - rw:~/workspace
+net:
+  - c:443
+  - c:80
+```
+
+```bash
+sandboxec --config mcp.yaml
+```
+
+## Validation
+
+sandboxec validates configuration at startup:
+
+<AccordionGroup>
+  <Accordion title="File format must be YAML">
+    ```bash
+    # Error: config must be .yaml or .yml
+    sandboxec --config config.json -- your-command
+    ```
+  </Accordion>
+  
+  <Accordion title="Filesystem rights must be valid">
+    ```yaml
+    fs:
+      - invalid:/usr  # Error: invalid fs rights
+    ```
+    
+    Valid rights: `r`, `rx`, `w`, `rw`, `rwx`
+  </Accordion>
+  
+  <Accordion title="Network rights must be valid">
+    ```yaml
+    net:
+      - x:443  # Error: invalid network rights
+    ```
+    
+    Valid rights: `b`, `c`, `bc`
+  </Accordion>
+  
+  <Accordion title="Ports must be valid integers">
+    ```yaml
+    net:
+      - c:https  # Error: invalid port
+    ```
+    
+    Ports must be 0-65535.
+  </Accordion>
+</AccordionGroup>
+
+## Tips
+
+<Tip>
+**Version control your configs**: Store sandbox policies in your repository to ensure consistent security posture across environments.
+</Tip>
+
+<Tip>
+**Use named configs for standard profiles**: Instead of copying configs, reference shared profiles from the [sandboxec/profiles](https://github.com/sandboxec/profiles) repository.
+</Tip>
+
+<Tip>
+**Override for testing**: Use CLI flags to temporarily override config values during development:
+
+```bash
+sandboxec --config prod.yaml --best-effort -- your-command
+```
+</Tip>
+
+<Tip>
+**Environment variables in paths**: Config files support environment variable expansion:
+
+```yaml
+fs:
+  - rw:$HOME/workspace
+  - rw:${PROJECT_ROOT}/output
+```
+</Tip>

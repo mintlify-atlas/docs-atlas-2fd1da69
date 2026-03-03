@@ -1,0 +1,294 @@
+---
+title: MCP Integration
+description: Use sandboxec as a Model Context Protocol (MCP) server for AI agents
+---
+
+## Overview
+
+MCP (Model Context Protocol) mode allows sandboxec to run as a server that AI agents can interact with. Instead of executing a single command, sandboxec exposes a sandboxed execution environment through the MCP protocol.
+
+<Info>
+MCP mode is designed for AI agents that need to execute arbitrary commands in a controlled, sandboxed environment.
+</Info>
+
+## What is MCP Mode?
+
+When running with `--mode mcp`, sandboxec:
+
+- Starts as an MCP server instead of executing a single command
+- Listens for execution requests from MCP clients (typically AI agents)
+- Applies the same Landlock-based sandboxing rules to all executed commands
+- Returns structured output (stdout, stderr, exit code) for each execution
+
+<Warning>
+In MCP mode, sandboxec does not accept command arguments. All configuration must be provided via flags or config files.
+</Warning>
+
+## How It Works
+
+MCP mode uses the [Model Context Protocol Go SDK](https://github.com/modelcontextprotocol/go-sdk) to expose a sandboxed execution environment:
+
+1. **Server Initialization** - sandboxec starts an MCP server using stdio transport (internal/mcp/server.go:88-92)
+2. **Tool Registration** - The `exec` tool is registered with the MCP server (internal/mcp/server.go:94-97)
+3. **Request Handling** - When the client calls the `exec` tool, sandboxec:
+   - Creates a sandboxed command using the configured rules
+   - Executes the command with Landlock restrictions
+   - Captures stdout, stderr, and exit code
+   - Returns structured output to the client
+
+```go
+// From internal/mcp/server.go:43-86
+func run(ctx context.Context, input input, Options []sandboxec.Option) (output, error) {
+    opts := append([]sandboxec.Option(nil), Options...)
+    sb := sandboxec.New(opts...)
+    cmd := sb.Command(input.Command, input.Args...)
+    
+    var stdout bytes.Buffer
+    var stderr bytes.Buffer
+    cmd.Stdout = &stdout
+    cmd.Stderr = &stderr
+    
+    err := cmd.Run()
+    return output{
+        Stdout: stdout.String(),
+        Stderr: stderr.String(),
+        ExitCode: exitCode,
+    }, nil
+}
+```
+
+## Available MCP Tools
+
+### `exec` Tool
+
+Executes a command in the sandboxed environment and returns structured output.
+
+**Input Schema** (internal/mcp/server.go:21-24):
+
+```json
+{
+  "command": "string (required)",
+  "args": ["string", "..."] // optional array
+}
+```
+
+**Output Schema** (internal/mcp/server.go:26-30):
+
+```json
+{
+  "stdout": "string",
+  "stderr": "string",
+  "exit_code": 0
+}
+```
+
+**Example Request**:
+
+```json
+{
+  "command": "/usr/bin/ls",
+  "args": ["-la", "/tmp"]
+}
+```
+
+**Example Response**:
+
+```json
+{
+  "stdout": "total 8\ndrwxrwxrwt 2 root root 4096 Mar  3 10:00 .\n...",
+  "stderr": "",
+  "exit_code": 0
+}
+```
+
+<Note>
+The `exec` tool applies all filesystem and network rules configured when sandboxec was started. Commands cannot bypass these restrictions.
+</Note>
+
+## Configuration
+
+### Basic MCP Setup
+
+Start sandboxec in MCP mode with filesystem and network rules:
+
+```bash
+sandboxec --mode mcp \
+  --fs rx:/usr \
+  --fs rw:/tmp \
+  --fs rw:$PWD \
+  --net c:443
+```
+
+### MCP Client Configuration
+
+Configure your MCP client (e.g., Claude Desktop, other AI agents) to use sandboxec as a server:
+
+```json
+{
+  "mcpServers": {
+    "sandboxec": {
+      "command": "/path/to/go/bin/sandboxec",
+      "args": [
+        "--mode", "mcp",
+        "--fs", "rx:/usr",
+        "--fs", "rw:/tmp",
+        "--fs", "rw:/path/to/your/workspace",
+        "--net", "c:443"
+      ]
+    }
+  }
+}
+```
+
+<Tip>
+Use `--best-effort` flag to gracefully degrade on older kernels that lack full Landlock support.
+</Tip>
+
+### Using Config Files
+
+For complex configurations, use a YAML config file:
+
+```yaml
+# sandboxec-mcp.yaml
+mode: mcp
+abi: 6
+best-effort: true
+ignore-if-missing: true
+fs:
+  - rx:/bin
+  - rx:/usr
+  - rx:/lib
+  - rx:/usr/lib
+  - rw:/tmp
+  - rw:/home/user/workspace
+net:
+  - c:443
+  - c:80
+```
+
+Then reference it in your MCP client config:
+
+```json
+{
+  "mcpServers": {
+    "sandboxec": {
+      "command": "/path/to/go/bin/sandboxec",
+      "args": ["--config", "/path/to/sandboxec-mcp.yaml"]
+    }
+  }
+}
+```
+
+## Use Cases
+
+### AI Agent Code Execution
+
+Allow AI agents to execute code in a sandboxed environment:
+
+- **Restricted filesystem access** - Only allow access to specific project directories
+- **Network control** - Permit outbound HTTPS but block other connections
+- **Isolated execution** - Prevent agents from affecting the host system
+
+### Automated Testing
+
+Use MCP mode for automated testing workflows:
+
+```bash
+# Start MCP server for test runner
+sandboxec --mode mcp \
+  --fs rx:/usr \
+  --fs rw:/tmp \
+  --fs rw:$PWD/tests \
+  --unsafe-host-runtime
+```
+
+### Development Environments
+
+Provide sandboxed execution for development tools:
+
+<Steps>
+  <Step title="Configure workspace access">
+    ```bash
+    sandboxec --mode mcp --fs rw:$HOME/projects --fs rx:/usr
+    ```
+  </Step>
+  
+  <Step title="Set network restrictions">
+    Only allow HTTPS connections:
+    ```bash
+    --net c:443
+    ```
+  </Step>
+  
+  <Step title="Connect your AI agent">
+    Configure your MCP client to use the sandboxec server
+  </Step>
+</Steps>
+
+<Warning>
+**Security Considerations**
+
+MCP mode inherits all sandboxec security properties and limitations:
+- Rules are applied at process creation time
+- Landlock restrictions cannot be escalated after creation
+- This is NOT a replacement for full VM/container isolation
+- Do not use for multi-tenant untrusted workloads
+</Warning>
+
+## Troubleshooting
+
+### Connection Issues
+
+If your MCP client cannot connect to sandboxec:
+
+1. Verify the command path is correct
+2. Check that all required flags are provided
+3. Test with `--mode run` first to validate your rules
+
+### Permission Denied Errors
+
+If commands fail with permission errors:
+
+<Steps>
+  <Step title="Add missing runtime paths">
+    Many commands need access to system libraries:
+    ```bash
+    --fs rx:/lib --fs rx:/usr/lib
+    ```
+  </Step>
+  
+  <Step title="Enable best-effort mode">
+    For older kernels:
+    ```bash
+    --best-effort
+    ```
+  </Step>
+  
+  <Step title="Consider unsafe-host-runtime">
+    For complex binaries with many dependencies:
+    ```bash
+    --unsafe-host-runtime
+    ```
+    
+    <Warning>This weakens security guarantees</Warning>
+  </Step>
+</Steps>
+
+### Exit Code Handling
+
+The MCP `exec` tool always returns successfully, even if the command fails. Check the `exit_code` field in the response:
+
+- `0` - Command succeeded
+- `N` - Command exited with code N
+- Check `stderr` for error messages
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Named Profiles" icon="file" href="/advanced/named-profiles">
+    Use pre-configured profiles for common scenarios
+  </Card>
+  <Card title="Best Practices" icon="shield" href="/advanced/best-practices">
+    Learn security and performance best practices
+  </Card>
+</CardGroup>

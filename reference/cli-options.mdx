@@ -1,0 +1,201 @@
+---
+title: CLI Options
+description: Complete reference for all sandboxec command-line options
+---
+
+## Overview
+
+The `sandboxec` command accepts various options to configure sandbox behavior, filesystem and network rules, and execution modes.
+
+```bash
+sandboxec [OPTIONS] [COMMAND [ARG...]]
+```
+
+## Configuration Options
+
+<ParamField path="-c, --config" type="string">
+  Path to YAML config file.
+  
+  Cannot be used together with `--named-config`.
+</ParamField>
+
+<ParamField path="-C, --named-config" type="string">
+  Named config profile (mapped to sandboxec/profiles repository).
+  
+  The value maps to a profile in the [sandboxec/profiles](https://github.com/sandboxec/profiles) repository. The profile name is automatically resolved to a URL.
+  
+  Cannot be used together with `--config`.
+  
+  **Example:** `--named-config agents/claude` resolves to the Claude agent profile.
+</ParamField>
+
+## Rule Options
+
+<ParamField path="-f, --fs" type="string" required>
+  Filesystem rule (repeatable).
+  
+  Format: `RIGHTS:PATH`
+  
+  This flag can be specified multiple times to add multiple filesystem rules. When set via CLI, these rules replace any rules defined in the config file.
+  
+  See [Rule Format](/reference/rule-format) for valid rights values.
+  
+  **Examples:**
+  - `--fs rx:/usr`
+  - `--fs rw:/tmp`
+  - `--fs r:$HOME/data`
+</ParamField>
+
+<ParamField path="-n, --net" type="string">
+  Network rule (repeatable).
+  
+  Format: `RIGHTS:PORT`
+  
+  This flag can be specified multiple times to add multiple network rules. When set via CLI, these rules replace any rules defined in the config file.
+  
+  <Warning>
+    Network restrictions require Landlock ABI v4+ (typically Linux 6.7+).
+  </Warning>
+  
+  See [Rule Format](/reference/rule-format) for valid rights values.
+  
+  **Examples:**
+  - `--net c:443`
+  - `--net b:8080`
+  - `--net bc:3000`
+</ParamField>
+
+## Landlock Options
+
+<ParamField path="--abi" type="int" default="0">
+  Force specific Landlock ABI version (1-6, 0 means default).
+  
+  Use this to limit sandboxec to a specific Landlock ABI level. Setting to `0` (default) uses the highest ABI version supported by the kernel.
+  
+  <Info>
+    Different ABI versions support different features:
+    - **ABI v1+**: Filesystem restrictions (Linux 5.13+)
+    - **ABI v4+**: Network restrictions (Linux 6.7+)
+    - **ABI v6+**: Scoped IPC restrictions (newer kernels)
+  </Info>
+</ParamField>
+
+<ParamField path="--best-effort" type="boolean" default="false">
+  Continue even if the kernel lacks support for some features.
+  
+  When enabled, sandboxec will gracefully degrade functionality if the kernel doesn't support requested Landlock features, rather than failing.
+  
+  Useful when running on older kernels that lack full Landlock support.
+</ParamField>
+
+<ParamField path="--ignore-if-missing" type="boolean" default="false">
+  Do not fail if a rule path does not exist.
+  
+  By default, sandboxec fails if a filesystem path specified in a rule doesn't exist. This flag allows the sandbox to continue even when paths are missing.
+</ParamField>
+
+<ParamField path="--restrict-scoped" type="boolean" default="false">
+  Enable scoped IPC restrictions.
+  
+  <Warning>
+    Requires Landlock ABI v6+ (newer kernels only).
+  </Warning>
+  
+  This option enables additional IPC restrictions for sandboxed processes.
+</ParamField>
+
+<ParamField path="--unsafe-host-runtime" type="boolean" default="false">
+  Allow read_exec rights for host runtime paths.
+  
+  <Warning>
+    This option significantly weakens least-privilege guarantees and can increase startup latency.
+  </Warning>
+  
+  When enabled, sandboxec automatically adds `read_exec` rights for:
+  - PATH-derived runtime targets
+  - Resolved shared-library dependency files (`.so` files)
+  - Executable entries
+  
+  This is useful for host-linked tooling that requires broad runtime access, but comes with security and performance tradeoffs.
+</ParamField>
+
+## Execution Mode
+
+<ParamField path="-m, --mode" type="string" default="run">
+  Execution mode.
+  
+  Valid values:
+  - `run`: Execute a single command with sandboxing (default)
+  - `mcp`: Run as an MCP (Model Context Protocol) server
+  
+  <Info>
+    In MCP mode, no wrapped command arguments are accepted. The server exposes an `exec` tool for executing commands within the configured sandbox.
+  </Info>
+</ParamField>
+
+## Information Options
+
+<ParamField path="-V, --version" type="boolean">
+  Show app version and exit.
+  
+  Displays the version number, build commit, build date, description, and author information.
+</ParamField>
+
+<ParamField path="-h, --help" type="boolean">
+  Show help message and exit.
+  
+  Displays usage information, all available options, rule format reference, and examples.
+</ParamField>
+
+## Precedence Rules
+
+<Note>
+  When both config files and CLI flags are used:
+  
+  1. `--config` and `--named-config` cannot be used together (error)
+  2. CLI flags override config file values for scalar options
+  3. `--fs` and `--net` flags **replace** config lists when set (not merged)
+  4. If `--fs` or `--net` are not set, rules come from the config file
+</Note>
+
+## Examples
+
+### Basic Usage
+
+```bash
+# Run with filesystem rules only
+sandboxec --fs rx:/usr --fs rw:/tmp -- /usr/bin/id
+
+# Run with network access
+sandboxec --fs rx:/usr --net c:443 -- /usr/bin/curl https://example.com
+```
+
+### Using Config Files
+
+```bash
+# Use explicit config file
+sandboxec --config ./sandboxec.yaml -- /bin/echo ok
+
+# Use named profile from sandboxec/profiles repository
+sandboxec --named-config agents/claude -- claude --dangerously-skip-permissions
+```
+
+### Advanced Options
+
+```bash
+# Use best-effort mode on older kernels
+sandboxec --best-effort --fs rx:/usr --net c:443 -- your-command
+
+# Enable unsafe host runtime for build tools
+sandboxec --unsafe-host-runtime --fs rw:$PWD --net c:443 -- npm install
+
+# Force specific ABI version
+sandboxec --abi 4 --fs rx:/usr --net c:443 -- your-command
+```
+
+### MCP Mode
+
+```bash
+# Run as MCP server (no command arguments)
+sandboxec --mode mcp --fs rx:/usr --fs rw:/tmp --net c:443
+```

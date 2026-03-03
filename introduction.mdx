@@ -1,0 +1,109 @@
+---
+title: Introduction
+description: A lightweight command sandbox for Linux, secure-by-default, built on Landlock
+---
+
+# Welcome to sandboxec
+
+**sandboxec** is a lightweight command sandbox for Linux, built on Landlock. It lets you run risky commands with a tighter blast radius—no daemon, no root, no image build step.
+
+<img src="https://github.com/user-attachments/assets/2ff92aaa-7596-452f-a745-c0ae1e67f63f" alt="sandboxec demo" />
+
+## Why sandboxec?
+
+Running untrusted code is often an all-or-nothing choice. Containers and VMs are great tools, but they can be too much for quick command-level isolation. Containers add image and runtime overhead. VMs add stronger isolation with higher setup and resource cost.
+
+**sandboxec** focuses on a narrower job: sandbox one command on the current host, with low overhead and explicit allow rules.
+
+<CardGroup cols={2}>
+  <Card title="No Daemon" icon="server">
+    Run sandboxed commands directly without any background services
+  </Card>
+  <Card title="No Root" icon="shield">
+    No privileged access required—works as a regular user
+  </Card>
+  <Card title="No Image Build" icon="box">
+    Skip container image creation and registry management
+  </Card>
+  <Card title="Explicit Allow Rules" icon="list-check">
+    Define exactly what filesystem paths and network ports can be accessed
+  </Card>
+</CardGroup>
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="Sandbox Existing Binaries" icon="binary">
+    Restrict any command without modifying application code
+  </Card>
+  <Card title="Filesystem & Network Control" icon="lock">
+    Allow-list based rules for filesystem access and TCP bind/connect
+  </Card>
+  <Card title="Process Inheritance" icon="sitemap">
+    Restrictions apply to the command and all child processes
+  </Card>
+  <Card title="Low Overhead" icon="gauge-high">
+    Built on Landlock for lightweight, kernel-enforced isolation
+  </Card>
+</CardGroup>
+
+## Perfect For
+
+- Running third-party CLIs against a local repo
+- Executing generated code in CI
+- Testing install scripts before trusting them with full host access
+- Wrapping build tools that only need a small slice of the filesystem
+- AI agents executing commands with limited blast radius
+
+<Note>
+Use it to run risky commands with a tighter blast radius: third-party CLIs, untrusted scripts, generated code, and one-off tooling.
+</Note>
+
+## When NOT to Use sandboxec
+
+<Warning>
+Don't use sandboxec when you need:
+- Stronger isolation boundaries than Landlock process sandboxing
+- Multi-tenant isolation between untrusted users/workloads
+- Resource isolation/quotas (CPU, memory, disk, I/O)
+- Custom root filesystems, full runtime images, or OS-level virtualization
+
+Use containers or VMs for those cases.
+</Warning>
+
+## Get Started
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Run your first sandboxed command in minutes
+  </Card>
+  <Card title="Installation" icon="download" href="/installation">
+    Complete installation guide for all methods
+  </Card>
+</CardGroup>
+
+## Security Model
+
+**sandboxec** limits what a process can:
+- **Read / Write / Execute** on the filesystem
+- **Bind / Connect** on the network (TCP)
+
+Restrictions are applied immediately before launching the target command. Once set, those restrictions apply to that process and its children.
+
+<Info>
+It's designed to reduce damage from buggy, risky, or malicious user-space programs by narrowing what they can touch.
+</Info>
+
+<Warning>
+**sandboxec does NOT protect against:**
+- Kernel bugs or privileged local attackers
+- Resource exhaustion (CPU, memory, disk)
+- Every possible host interaction outside configured Landlock controls
+
+Treat it as a practical containment layer.
+</Warning>
+
+## Learn More
+
+For a deeper dive into the motivation and design philosophy, read:
+[The most practical, fast, tiny command sandboxing for AI agents](https://dw1.io/blog/2026/02/17/sandboxec/) by D. Siswanto

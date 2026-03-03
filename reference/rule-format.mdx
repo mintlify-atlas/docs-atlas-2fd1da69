@@ -1,0 +1,354 @@
+---
+title: Rule Format
+description: Specification for filesystem and network rule formats in sandboxec
+---
+
+## Overview
+
+Rules in sandboxec define what the sandboxed process is allowed to access. All rules are **allow-list based**: if it's not explicitly allowed, it's denied.
+
+<Warning>
+  If a path or port isn't listed in your rules, it will be invisible or inaccessible to the sandboxed process.
+</Warning>
+
+## Filesystem Rules
+
+### Format
+
+```
+RIGHTS:PATH
+```
+
+Filesystem rules grant specific access rights to a path and all its contents.
+
+### Valid Rights
+
+<ParamField path="read" type="string">
+  Read-only access to files and directories.
+  
+  **Short form:** `r`
+  
+  Allows the sandboxed process to:
+  - Read file contents
+  - List directory contents
+  - Stat files and directories
+  
+  **Example:** `--fs r:/etc/config`
+</ParamField>
+
+<ParamField path="read_exec" type="string">
+  Read and execute access.
+  
+  **Short form:** `rx`
+  
+  Allows the sandboxed process to:
+  - Read file contents
+  - Execute binaries
+  - Load shared libraries
+  - List directory contents
+  
+  <Info>
+    This is the most common permission for system directories like `/usr`, `/bin`, and `/lib`.
+  </Info>
+  
+  **Example:** `--fs rx:/usr`
+</ParamField>
+
+<ParamField path="write" type="string">
+  Write-only access.
+  
+  **Short form:** `w`
+  
+  Allows the sandboxed process to:
+  - Create new files
+  - Modify existing files
+  - Delete files
+  - Create and remove directories
+  
+  <Note>
+    Write-only access is rare. Most use cases need `read_write` instead.
+  </Note>
+  
+  **Example:** `--fs w:/var/log/app`
+</ParamField>
+
+<ParamField path="read_write" type="string">
+  Read and write access.
+  
+  **Short form:** `rw`
+  
+  Combines read and write permissions. Allows the sandboxed process to:
+  - Read file contents
+  - Write to files
+  - Create and delete files
+  - List and modify directories
+  
+  **Example:** `--fs rw:/tmp`
+</ParamField>
+
+<ParamField path="read_write_exec" type="string">
+  Full access: read, write, and execute.
+  
+  **Short form:** `rwx`
+  
+  Provides complete access to the path. Allows the sandboxed process to:
+  - Read, write, and execute files
+  - Create, modify, and delete files
+  - Load and execute binaries
+  - Full directory operations
+  
+  <Warning>
+    Use sparingly. This grants the most permissive access possible.
+  </Warning>
+  
+  **Example:** `--fs rwx:/workspace`
+</ParamField>
+
+### Path Expansion
+
+Paths in filesystem rules support:
+
+- **Environment variables:** `$HOME`, `$PWD`, `$USER`, etc.
+- **Tilde expansion:** `~` for home directory
+- **Absolute paths:** `/usr/bin`, `/tmp`
+
+**Examples:**
+```bash
+# Environment variable
+--fs rw:$PWD
+
+# Tilde expansion
+--fs r:~/config
+
+# Absolute path
+--fs rx:/usr/local/bin
+```
+
+### Requirements
+
+<Info>
+  Filesystem restrictions require Landlock support (Linux 5.13+).
+</Info>
+
+### Filesystem Rule Examples
+
+```bash
+# Read-only access to configuration
+sandboxec --fs r:/etc/myapp -- myapp
+
+# Execute system binaries
+sandboxec --fs rx:/usr --fs rx:/bin -- /bin/ls
+
+# Read/write workspace, read-only libraries
+sandboxec --fs rw:$PWD --fs rx:/usr -- build.sh
+
+# Multiple rules for complete environment
+sandboxec \
+  --fs rx:/usr \
+  --fs rx:/bin \
+  --fs rx:/lib \
+  --fs rw:/tmp \
+  --fs rw:$PWD \
+  -- npm install
+```
+
+## Network Rules
+
+### Format
+
+```
+RIGHTS:PORT
+```
+
+Network rules control TCP bind and connect operations on specific ports.
+
+### Valid Rights
+
+<ParamField path="bind" type="string">
+  Allow binding to a TCP port (listening for incoming connections).
+  
+  **Short form:** `b`
+  
+  Grants permission to:
+  - Create a listening socket on the specified port
+  - Accept incoming TCP connections
+  
+  **Example:** `--net b:8080`
+  
+  <Info>
+    Use this for server processes that need to listen on specific ports.
+  </Info>
+</ParamField>
+
+<ParamField path="connect" type="string">
+  Allow connecting to a TCP port (outbound connections).
+  
+  **Short form:** `c`
+  
+  Grants permission to:
+  - Establish outbound TCP connections to the specified port
+  - Make client requests
+  
+  **Example:** `--net c:443`
+  
+  <Info>
+    This is the most common network permission for client applications.
+  </Info>
+</ParamField>
+
+<ParamField path="bind_connect" type="string">
+  Allow both binding and connecting on a TCP port.
+  
+  **Short forms:** `bc` or `cb`
+  
+  Combines both bind and connect permissions for full bidirectional access.
+  
+  **Example:** `--net bc:3000`
+  
+  <Note>
+    Use this when the sandboxed process needs to both listen on and connect to the same port.
+  </Note>
+</ParamField>
+
+### Port Specification
+
+Ports must be valid TCP port numbers (0-65535).
+
+**Examples:**
+```bash
+# HTTPS outbound
+--net c:443
+
+# HTTP server
+--net b:8080
+
+# Development server with full access
+--net bc:3000
+```
+
+### Requirements
+
+<Warning>
+  Network restrictions require Landlock ABI v4+ (typically Linux 6.7+).
+</Warning>
+
+If your kernel doesn't support network restrictions:
+- Use `--best-effort` to continue without network sandboxing
+- Remove `--net` flags and rely on filesystem-only sandboxing
+- Upgrade to a newer kernel (6.7+)
+
+### Network Rule Examples
+
+```bash
+# HTTPS client access only
+sandboxec --fs rx:/usr --net c:443 -- /usr/bin/curl https://example.com
+
+# Run web server on port 8080
+sandboxec --fs rx:/usr --fs rw:$PWD --net b:8080 -- ./server
+
+# Development with multiple ports
+sandboxec \
+  --fs rx:/usr \
+  --fs rw:$PWD \
+  --net c:443 \
+  --net c:80 \
+  --net b:3000 \
+  -- npm run dev
+
+# Database client (PostgreSQL)
+sandboxec --fs rx:/usr --net c:5432 -- psql -h localhost
+```
+
+## Rule Behavior
+
+### Allow-List Only
+
+Rules are strictly allow-list based. There is no concept of "deny" rules.
+
+- ✅ If explicitly allowed → Access granted
+- ❌ If not mentioned → Access denied
+
+### Cumulative Rules
+
+Multiple `--fs` and `--net` flags are cumulative:
+
+```bash
+sandboxec \
+  --fs rx:/usr \
+  --fs rw:/tmp \
+  --net c:443 \
+  --net c:80 \
+  -- your-command
+```
+
+This grants:
+- Read-execute on `/usr`
+- Read-write on `/tmp`
+- Connect on ports 443 and 80
+
+### Runtime Dependencies
+
+<Warning>
+  Rules must include **every runtime dependency** your command needs.
+</Warning>
+
+Most commands require:
+- **Binaries:** `/bin`, `/usr/bin`
+- **Libraries:** `/lib`, `/usr/lib`, `/lib64`
+- **Dynamic linker:** `/lib64/ld-linux-x86-64.so.2`
+- **Configuration:** `/etc` (for DNS, certificates, etc.)
+
+Common dependency pattern:
+```bash
+sandboxec \
+  --fs rx:/usr \
+  --fs rx:/lib \
+  --fs rx:/lib64 \
+  --fs r:/etc \
+  --fs rw:$PWD \
+  -- your-command
+```
+
+### Automatic Runtime Discovery
+
+Use `--unsafe-host-runtime` to automatically add common runtime dependencies:
+
+```bash
+sandboxec --unsafe-host-runtime --fs rw:$PWD -- your-build-tool
+```
+
+<Warning>
+  `--unsafe-host-runtime` weakens security guarantees and increases startup latency. Use only when necessary.
+</Warning>
+
+## Common Patterns
+
+### Read-Only System Access
+
+```bash
+--fs rx:/usr --fs rx:/bin --fs rx:/lib --fs r:/etc
+```
+
+### Workspace Isolation
+
+```bash
+--fs rx:/usr --fs rw:$PWD --fs rw:/tmp
+```
+
+### Network Client (HTTPS)
+
+```bash
+--fs rx:/usr --fs r:/etc --net c:443
+```
+
+### Web Server
+
+```bash
+--fs rx:/usr --fs rw:$PWD --net b:8080
+```
+
+### Build Environment
+
+```bash
+--fs rx:/usr --fs rx:/bin --fs rx:/lib --fs rw:$PWD --fs rw:/tmp --net c:443
+```

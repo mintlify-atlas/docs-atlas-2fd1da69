@@ -1,0 +1,556 @@
+---
+title: Best Practices
+description: Security, performance, and usage guidelines for sandboxec
+---
+
+## Overview
+
+This guide covers best practices for using sandboxec effectively and securely. Learn when to use sandboxec versus other isolation tools, how to determine required rules, and how to optimize performance.
+
+## When to Use sandboxec
+
+### Good Use Cases
+
+sandboxec is designed for **command-level sandboxing** with low overhead. Use it when you need:
+
+<CardGroup cols={2}>
+  <Card title="Third-party CLI Tools" icon="terminal">
+    Restrict filesystem access for untrusted or risky binaries
+    
+    ```bash
+    sandboxec --fs rx:/usr --fs rw:$PWD \
+      -- third-party-tool
+    ```
+  </Card>
+  
+  <Card title="Generated Code" icon="code">
+    Execute AI-generated or dynamically created scripts in CI/CD
+    
+    ```bash
+    sandboxec --fs rx:/usr --fs rw:/tmp \
+      -- python generated_script.py
+    ```
+  </Card>
+  
+  <Card title="Local Testing" icon="vial">
+    Test install scripts before granting full access
+    
+    ```bash
+    sandboxec --fs rx:/usr --fs rw:$PWD \
+      -- bash install.sh
+    ```
+  </Card>
+  
+  <Card title="Build Tools" icon="hammer">
+    Restrict build systems to project directories only
+    
+    ```bash
+    sandboxec --fs rx:/usr --fs rw:$PWD \
+      --net c:443 -- npm install
+    ```
+  </Card>
+</CardGroup>
+
+### From README: Purpose (lines 18-24)
+
+> Running untrusted code is often an all-or-nothing choice.
+>
+> Containers and VMs are great tools, but they can be too much for quick command-level isolation. Containers add image and runtime overhead. VMs add stronger isolation with higher setup and resource cost.
+>
+> **sandboxec** focuses on a narrower job: sandbox one command on the current host, with low overhead and explicit allow rules.
+
+## When NOT to Use sandboxec
+
+From README lines 46-53, sandboxec is **not suitable** when you need:
+
+<Warning>
+**Use Containers or VMs Instead**
+
+Do NOT use sandboxec for:
+- Stronger isolation boundaries than Landlock process sandboxing
+- Multi-tenant isolation between untrusted users/workloads
+- Resource isolation/quotas (CPU, memory, disk, I/O)
+- Custom root filesystems, full runtime images, or OS-level virtualization
+</Warning>
+
+### Comparison Table
+
+| Requirement | sandboxec | Containers | VMs |
+|-------------|-----------|------------|-----|
+| Command-level isolation | ✅ | ⚠️ | ⚠️ |
+| Low startup overhead | ✅ | ⚠️ | ❌ |
+| Filesystem restrictions | ✅ | ✅ | ✅ |
+| Network restrictions | ✅ | ✅ | ✅ |
+| Resource quotas | ❌ | ✅ | ✅ |
+| Multi-tenant isolation | ❌ | ✅ | ✅ |
+| Custom root filesystem | ❌ | ✅ | ✅ |
+| Kernel isolation | ❌ | ❌ | ✅ |
+
+<Tip>
+**Quick Rule of Thumb**
+
+- Single untrusted command? → **sandboxec**
+- Multiple processes needing isolation? → **Container**
+- Untrusted kernel code or multi-tenancy? → **VM**
+</Tip>
+
+## Determining Required Rules
+
+### Start Minimal, Add as Needed
+
+The safest approach is to start with minimal permissions and add rules when commands fail:
+
+<Steps>
+  <Step title="Start with minimal rules">
+    ```bash
+    sandboxec --fs rx:/usr/bin/command -- /usr/bin/command
+    ```
+  </Step>
+  
+  <Step title="Run and observe failures">
+    Note "permission denied" errors in stderr
+  </Step>
+  
+  <Step title="Add required paths">
+    ```bash
+    sandboxec --fs rx:/usr --fs rx:/lib \
+      -- /usr/bin/command
+    ```
+  </Step>
+  
+  <Step title="Iterate until successful">
+    Repeat until the command works
+  </Step>
+</Steps>
+
+### Common Dependencies
+
+Most commands need these base paths:
+
+```yaml
+fs:
+  - rx:/usr        # System binaries and libraries
+  - rx:/lib        # Shared libraries
+  - rx:/usr/lib    # Additional libraries
+  - rw:/tmp        # Temporary files
+```
+
+<Note>
+**Why these paths?**
+
+- `/usr` - Contains most system binaries (`/usr/bin`) and libraries
+- `/lib` and `/usr/lib` - Shared objects (`.so` files) required at runtime
+- `/tmp` - Many programs write temporary files
+</Note>
+
+### Using `strace` for Discovery
+
+Use `strace` to see exactly what files a command accesses:
+
+```bash
+# Trace file system calls
+strace -e trace=file /usr/bin/command 2>&1 | grep -E "(EACCES|ENOENT)"
+
+# Look for permission errors
+strace -e trace=openat,stat /usr/bin/command 2>&1 | tee trace.log
+```
+
+Convert strace output to sandboxec rules:
+
+```bash
+# If strace shows: openat("/usr/lib/x86_64-linux-gnu/libc.so.6")
+# Add rule: --fs rx:/usr/lib
+```
+
+### Testing with `--ignore-if-missing`
+
+Use `--ignore-if-missing` during development to skip non-existent paths:
+
+```bash
+sandboxec --ignore-if-missing \
+  --fs rx:/usr \
+  --fs rx:/nonexistent \
+  -- command
+```
+
+<Warning>
+Do NOT use `--ignore-if-missing` in production. It can hide configuration errors.
+</Warning>
+
+## Security Considerations
+
+### Security Model (from README lines 67-82)
+
+sandboxec limits what a process can:
+- **Read / Write / Execute** on the filesystem
+- **Bind / Connect** on the network (TCP)
+
+Restrictions apply immediately before launching the command and inherit to child processes.
+
+<Warning>
+**What sandboxec Does NOT Protect Against**
+
+From README Important note:
+- Kernel bugs or privileged local attackers
+- Resource exhaustion (CPU, memory, disk)
+- Every possible host interaction outside configured Landlock controls
+
+Treat it as a practical containment layer, not a complete security boundary.
+</Warning>
+
+### Principle of Least Privilege
+
+Always grant the minimum permissions needed:
+
+❌ **Bad: Too permissive**
+```bash
+sandboxec --fs rwx:/ -- untrusted-script
+```
+
+✅ **Good: Minimal permissions**
+```bash
+sandboxec --fs rx:/usr --fs rw:/tmp/workspace -- untrusted-script
+```
+
+### Read-Only When Possible
+
+Use `rx` (read+execute) instead of `rw` (read+write) for system paths:
+
+```bash
+# System paths: read+execute only
+sandboxec --fs rx:/usr --fs rx:/lib \
+  # Working directory: read+write
+  --fs rw:$PWD \
+  -- command
+```
+
+### Network Restrictions
+
+Limit network access to required ports:
+
+```bash
+# HTTPS only
+sandboxec --fs rx:/usr --net c:443 -- curl https://api.example.com
+
+# Specific ports for local services
+sandboxec --fs rx:/usr --net c:8080 --net c:5432 -- app
+```
+
+<Tip>
+**Default Deny**
+
+If you don't specify `--net` rules, all network access is blocked. This is the safest default.
+</Tip>
+
+### Scoped Restrictions
+
+For even stricter isolation, use `--restrict-scoped` (requires kernel 6.7+ with Landlock ABI v6):
+
+```bash
+sandboxec --restrict-scoped \
+  --fs rx:/usr --fs rw:/tmp \
+  -- isolated-command
+```
+
+<Note>
+`--restrict-scoped` adds IPC restrictions to prevent certain types of process interaction.
+</Note>
+
+## Performance Considerations
+
+### Startup Overhead
+
+sandboxec has minimal overhead for most commands:
+- Landlock setup: ~1-2ms
+- Rule parsing: negligible
+- No image build or container startup
+
+### The `--unsafe-host-runtime` Flag
+
+From README lines 155-156 and 266-267:
+
+<Warning>
+**Performance vs Security Trade-off**
+
+`--unsafe-host-runtime` adds `read_exec` rights for:
+- All binaries in `$PATH`
+- Their shared library dependencies (discovered via `ldd`)
+
+This can **significantly increase startup latency**, especially for short-lived commands.
+
+It also **weakens least-privilege guarantees** by granting broad filesystem access.
+</Warning>
+
+**When to use `--unsafe-host-runtime`:**
+
+✅ Build tools with many dynamic dependencies:
+```bash
+sandboxec --unsafe-host-runtime \
+  --fs rw:$PWD --net c:443 \
+  -- npm install
+```
+
+❌ Simple commands with few dependencies:
+```bash
+# Don't use --unsafe-host-runtime
+sandboxec --fs rx:/usr -- echo hello
+```
+
+### Rule Optimization
+
+#### Use Broader Paths When Safe
+
+Instead of:
+```bash
+--fs rx:/usr/bin/python3 \
+--fs rx:/usr/lib/python3.11 \
+--fs rx:/usr/lib/x86_64-linux-gnu
+```
+
+Use:
+```bash
+--fs rx:/usr
+```
+
+<Note>
+Broader paths are more maintainable and have similar performance. Only use narrow paths when security requires it.
+</Note>
+
+#### Minimize Network Rules
+
+Network rules are checked on every bind/connect call:
+
+```bash
+# Efficient: one rule for common port
+--net c:443
+
+# Less efficient: many rules
+--net c:443 --net c:8080 --net c:8443 --net c:9000 ...
+```
+
+### Best-Effort Mode
+
+Use `--best-effort` for compatibility across kernel versions:
+
+```bash
+sandboxec --best-effort \
+  --fs rx:/usr \
+  --net c:443 \
+  -- command
+```
+
+<Info>
+`--best-effort` allows sandboxec to run on older kernels by gracefully degrading unsupported features (like network rules on kernels < 6.7).
+</Info>
+
+## Testing Sandboxed Commands
+
+### Verify Restrictions Work
+
+Test that restrictions are actually applied:
+
+<Steps>
+  <Step title="Test filesystem restrictions">
+    ```bash
+    # Should fail with permission denied
+    sandboxec --fs rx:/usr -- ls /root
+    
+    # Should succeed
+    sandboxec --fs rx:/usr -- ls /usr
+    ```
+  </Step>
+  
+  <Step title="Test network restrictions">
+    ```bash
+    # Should fail (no network access)
+    sandboxec --fs rx:/usr -- curl https://example.com
+    
+    # Should succeed
+    sandboxec --fs rx:/usr --net c:443 -- curl https://example.com
+    ```
+  </Step>
+  
+  <Step title="Test write restrictions">
+    ```bash
+    # Should fail (read-only)
+    sandboxec --fs rx:/tmp -- touch /tmp/test.txt
+    
+    # Should succeed
+    sandboxec --fs rw:/tmp -- touch /tmp/test.txt
+    ```
+  </Step>
+</Steps>
+
+### Integration Testing
+
+Include sandboxec in your CI/CD pipeline:
+
+```yaml
+# .github/workflows/test.yml
+jobs:
+  test-sandboxed:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install sandboxec
+        run: curl -sSL https://get.sandbox.ec | sh
+      
+      - name: Run tests in sandbox
+        run: |
+          sandboxec --fs rx:/usr --fs rw:$PWD \
+            -- npm test
+```
+
+### Debugging Failed Commands
+
+<Steps>
+  <Step title="Run without sandboxec first">
+    ```bash
+    # Does the command work normally?
+    /usr/bin/command
+    ```
+  </Step>
+  
+  <Step title="Add sandboxec with verbose stderr">
+    ```bash
+    sandboxec --fs rx:/usr -- /usr/bin/command 2>&1 | tee error.log
+    ```
+  </Step>
+  
+  <Step title="Check for permission errors">
+    ```bash
+    grep -i "permission denied" error.log
+    grep -i "EACCES" error.log
+    ```
+  </Step>
+  
+  <Step title="Add missing paths incrementally">
+    ```bash
+    sandboxec --fs rx:/usr --fs rx:/lib -- /usr/bin/command
+    ```
+  </Step>
+</Steps>
+
+## Configuration Management
+
+### Use Config Files for Complex Rules
+
+For commands with many rules, use YAML config:
+
+```yaml
+# project-sandbox.yaml
+abi: 6
+best-effort: true
+ignore-if-missing: true
+fs:
+  - rx:/bin
+  - rx:/usr
+  - rx:/lib
+  - rx:/usr/lib
+  - rw:/tmp
+  - rw:$PWD
+net:
+  - c:443
+  - c:80
+```
+
+```bash
+sandboxec --config project-sandbox.yaml -- command
+```
+
+### Use Named Profiles for Common Patterns
+
+Instead of duplicating rules, use [named profiles](/advanced/named-profiles):
+
+```bash
+# Reusable profile for all Python projects
+sandboxec -C languages/python -- python script.py
+```
+
+### Version Control Your Configs
+
+Commit sandbox configs to your repository:
+
+```
+project/
+├── .sandboxec.yaml
+├── src/
+└── tests/
+```
+
+```bash
+# Use project config automatically
+sandboxec -- make build
+```
+
+## Common Patterns
+
+### Development Workflow
+
+```bash
+# Local development with broad access
+sandboxec --fs rx:/usr --fs rw:$PWD --net c:443 \
+  -- npm run dev
+```
+
+### CI/CD Pipeline
+
+```bash
+# Strict isolation for untrusted code
+sandboxec --fs rx:/usr --fs rw:/tmp/build \
+  --net c:443 --ignore-if-missing \
+  -- build-script
+```
+
+### AI Agent Execution
+
+```bash
+# MCP mode with workspace access
+sandboxec --mode mcp \
+  --fs rx:/usr --fs rw:$HOME/workspace \
+  --net c:443
+```
+
+### Quick Testing
+
+```bash
+# Test install script before running it for real
+sandboxec --fs rx:/usr --fs rw:/tmp/test \
+  -- bash install.sh --dry-run
+```
+
+## Exit Codes and Error Handling
+
+From README lines 257-261:
+
+| Exit Code | Meaning |
+|-----------|----------|
+| `0` | Wrapped command succeeded |
+| `N` | Wrapped command exited with code `N` |
+| `1` | sandboxec setup failed (parsing error, Landlock failure) |
+
+Handle errors appropriately:
+
+```bash
+#!/bin/bash
+sandboxec --fs rx:/usr -- command
+exit_code=$?
+
+if [ $exit_code -eq 1 ]; then
+    echo "sandboxec configuration error"
+elif [ $exit_code -ne 0 ]; then
+    echo "Command failed with code $exit_code"
+fi
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="MCP Integration" icon="plug" href="/advanced/mcp-integration">
+    Use sandboxec with AI agents via MCP protocol
+  </Card>
+  <Card title="Named Profiles" icon="file" href="/advanced/named-profiles">
+    Use pre-configured profiles for common scenarios
+  </Card>
+</CardGroup>

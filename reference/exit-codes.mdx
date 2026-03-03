@@ -1,0 +1,281 @@
+---
+title: Exit Codes
+description: Understanding sandboxec exit codes and their meanings
+---
+
+## Overview
+
+The `sandboxec` command returns different exit codes based on the execution outcome. Understanding these codes helps with debugging and error handling in scripts.
+
+## Exit Code Summary
+
+| Exit Code | Meaning | Description |
+|-----------|---------|-------------|
+| `0` | Success | Wrapped command executed successfully |
+| `N` | Command Failed | Wrapped command exited with code `N` (1-255) |
+| `1` | Setup Failure | `sandboxec` failed during setup |
+
+## Exit Code 0: Success
+
+### Description
+
+The wrapped command executed successfully and exited with code 0.
+
+### When This Occurs
+
+- The sandboxed command completed without errors
+- All sandbox restrictions were applied successfully
+- The command had sufficient permissions to complete its task
+
+### Example
+
+```bash
+$ sandboxec --fs rx:/usr -- /usr/bin/echo "hello"
+hello
+$ echo $?
+0
+```
+
+<Note>
+  Exit code 0 indicates the **wrapped command** succeeded, not just that sandboxec started successfully.
+</Note>
+
+## Exit Code N: Command Failure
+
+### Description
+
+The wrapped command executed but exited with a non-zero status code `N`. The exit code from the wrapped command is passed through directly.
+
+### When This Occurs
+
+- The sandbox was set up successfully
+- The command ran but encountered an error
+- The command exited with a specific error code
+
+### Examples
+
+#### Command Returns Exit Code 2
+
+```bash
+$ sandboxec --fs rx:/usr -- /bin/ls /nonexistent
+ls: cannot access '/nonexistent': No such file or directory
+$ echo $?
+2
+```
+
+The `ls` command failed with exit code 2 (file not found), and sandboxec passes this through.
+
+#### Command Returns Exit Code 127
+
+```bash
+$ sandboxec --fs rx:/usr -- /usr/bin/nonexistent-command
+$ echo $?
+127
+```
+
+Common shell exit codes are preserved:
+- `127`: Command not found
+- `126`: Command found but not executable
+- `130`: Terminated by Ctrl+C (SIGINT)
+
+#### Permission Denied Within Sandbox
+
+```bash
+$ sandboxec --fs rx:/usr -- /bin/cat /etc/passwd
+cat: /etc/passwd: Permission denied
+$ echo $?
+1
+```
+
+The `cat` command failed due to sandbox restrictions (no access to `/etc`), returning exit code 1.
+
+<Info>
+  Exit codes 1-255 from the wrapped command are preserved and returned by sandboxec.
+</Info>
+
+## Exit Code 1: Sandboxec Setup Failure
+
+### Description
+
+`sandboxec` itself failed during initialization or setup, before the wrapped command could execute.
+
+### When This Occurs
+
+- **Parsing errors:** Invalid command-line flags or config file syntax
+- **Invalid rules:** Malformed filesystem or network rules
+- **Landlock failures:** Kernel doesn't support required Landlock features
+- **Missing command:** No command specified (in `run` mode)
+- **Configuration errors:** Conflicting options or invalid values
+- **Path errors:** Required paths don't exist (when `--ignore-if-missing` is not set)
+
+### Examples
+
+#### Invalid Filesystem Rights
+
+```bash
+$ sandboxec --fs invalid:/usr -- /bin/echo hello
+invalid fs rights "invalid" (valid: read|r, read_exec|rx, write|w, read_write|rw, read_write_exec|rwx)
+$ echo $?
+1
+```
+
+#### Missing Command
+
+```bash
+$ sandboxec --fs rx:/usr
+missing command
+$ echo $?
+1
+```
+
+#### Conflicting Options
+
+```bash
+$ sandboxec --config ./sandboxec.yaml --named-config agents/claude -- echo hello
+--config and --named-config cannot be used together
+$ echo $?
+1
+```
+
+#### Unsupported Landlock Feature
+
+```bash
+# On a kernel without network support (< 6.7)
+$ sandboxec --fs rx:/usr --net c:443 -- curl https://example.com
+Error: Landlock ABI v4+ required for network restrictions
+$ echo $?
+1
+```
+
+<Warning>
+  When sandboxec exits with code 1 due to setup failure, the wrapped command was never executed.
+</Warning>
+
+#### Invalid Network Rule Format
+
+```bash
+$ sandboxec --fs rx:/usr --net invalid:443 -- curl https://example.com
+invalid network rights "invalid" (valid: bind|b, connect|c, bind_connect|bc)
+$ echo $?
+1
+```
+
+#### Invalid Mode
+
+```bash
+$ sandboxec --mode invalid -- echo hello
+invalid mode "invalid" (valid: run|mcp)
+$ echo $?
+1
+```
+
+## Distinguishing Between Failure Types
+
+### Setup Failure vs Command Failure
+
+Both return exit code 1, but the context differs:
+
+**Setup failure:**
+- Error messages reference sandboxec configuration or setup
+- Occurs before command execution
+- No command output is produced
+
+```bash
+$ sandboxec --fs invalid:/usr -- echo hello
+invalid fs rights "invalid" ...
+# Exit code 1: sandboxec setup failed
+```
+
+**Command failure:**
+- Error messages come from the wrapped command
+- Command executed but encountered errors
+- Command may produce partial output
+
+```bash
+$ sandboxec --fs rx:/usr -- ls /nonexistent
+ls: cannot access '/nonexistent': No such file or directory
+# Exit code 2: ls command failed (not setup failure)
+```
+
+## Using Exit Codes in Scripts
+
+### Check for Success
+
+```bash
+if sandboxec --fs rx:/usr -- /usr/bin/id; then
+    echo "Command succeeded"
+else
+    echo "Command or setup failed"
+fi
+```
+
+### Capture and Handle Exit Codes
+
+```bash
+sandboxec --fs rx:/usr --net c:443 -- /usr/bin/curl https://example.com
+exit_code=$?
+
+if [ $exit_code -eq 0 ]; then
+    echo "Success"
+elif [ $exit_code -eq 1 ]; then
+    echo "Setup or command failure - check error message"
+else
+    echo "Command exited with code $exit_code"
+fi
+```
+
+### CI/CD Integration
+
+```bash
+#!/bin/bash
+set -e  # Exit on any error
+
+# Setup will fail fast if sandbox configuration is invalid
+sandboxec \
+  --fs rx:/usr \
+  --fs rw:$PWD \
+  --net c:443 \
+  -- npm test
+
+echo "Tests passed"
+```
+
+## Troubleshooting by Exit Code
+
+### Exit Code 1 Troubleshooting
+
+1. **Check the error message** - sandboxec provides detailed error messages
+2. **Validate rule syntax** - Ensure `RIGHTS:PATH` format is correct
+3. **Check kernel version** - Verify Landlock support for requested features
+4. **Use `--best-effort`** - Try degrading gracefully on older kernels
+5. **Review config files** - Check for YAML syntax errors
+
+### Exit Code 126 or 127
+
+```bash
+$ sandboxec --fs rx:/usr -- /usr/local/bin/mytool
+$ echo $?
+127
+```
+
+- **127:** Command not found - check if binary exists and is in allowed paths
+- **126:** Not executable - verify execute permissions and `rx` rights
+
+### Exit Code > 128
+
+Exit codes above 128 typically indicate signal termination:
+
+- **130:** Terminated by SIGINT (Ctrl+C)
+- **137:** Terminated by SIGKILL
+- **143:** Terminated by SIGTERM
+
+```bash
+$ sandboxec --fs rx:/usr -- sleep 100
+^C
+$ echo $?
+130
+```
+
+<Info>
+  For detailed troubleshooting of specific errors, see [Troubleshooting](/reference/troubleshooting).
+</Info>

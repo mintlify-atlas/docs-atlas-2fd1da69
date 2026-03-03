@@ -1,80 +1,201 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Run your first sandboxed command in minutes
 ---
 
-## Get started in three steps
+## Get started with sandboxec
 
-Get your documentation site running locally and make your first customization.
+This quickstart guide will help you install sandboxec and run your first sandboxed command.
 
-### Step 1: Set up your local environment
-
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+<Steps>
+  <Step title="Check kernel compatibility">
+    sandboxec requires Linux kernel 5.13+ with Landlock support enabled.
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
+    Check your kernel version:
     
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
+    ```bash
+    uname -r
+    ```
     
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    <Note>
+    Network restrictions (TCP bind/connect) require kernel 6.7+ (Landlock ABI v4+)
+    </Note>
+  </Step>
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+  <Step title="Install sandboxec">
+    Choose your preferred installation method:
+    
+    <Tabs>
+      <Tab title="Install Script">
+        ```bash
+        curl -sSL https://get.sandbox.ec | sh
+        ```
+      </Tab>
+      
+      <Tab title="Go Install">
+        ```bash
+        go install go.sandbox.ec/sandboxec@v0.3.0
+        ```
+        
+        <Note>Requires Go 1.24.0 or later</Note>
+      </Tab>
+      
+      <Tab title="Pre-built Binary">
+        Download from the [releases page](https://github.com/sandboxec/sandboxec/releases/latest)
+      </Tab>
+    </Tabs>
+  </Step>
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+  <Step title="Run your first sandboxed command">
+    Sandbox a simple command with filesystem restrictions:
+    
+    ```bash
+    sandboxec --fs rx:/usr -- /usr/bin/echo "Hello from sandbox!"
+    ```
+    
+    This command:
+    - Grants read+execute (`rx`) access to `/usr`
+    - Runs `/usr/bin/echo` with the argument "Hello from sandbox!"
+    - Denies access to everything else on the filesystem
+    
+    <Info>
+    The `--` separator is optional but recommended to clearly separate sandboxec options from the wrapped command and its arguments.
+    </Info>
+  </Step>
 
-### Step 3: Go live
+  <Step title="Try filesystem isolation">
+    See how sandboxec blocks unauthorized filesystem access:
+    
+    ```bash
+    # This works - /usr is allowed
+    sandboxec --fs rx:/usr -- /usr/bin/ls /usr
+    
+    # This fails - /home is not in the allow-list
+    sandboxec --fs rx:/usr -- /usr/bin/ls /home
+    ```
+    
+    The second command will fail with a permission denied error because `/home` was not granted access.
+  </Step>
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+  <Step title="Add network restrictions">
+    Sandbox a command that needs network access:
+    
+    ```bash
+    sandboxec \
+      --fs rx:/usr \
+      --net c:443 \
+      -- /usr/bin/curl https://example.com
+    ```
+    
+    This allows:
+    - Read+execute access to `/usr` for running curl and its dependencies
+    - TCP connect (`c`) on port 443 for HTTPS
+    
+    <Warning>
+    Network restrictions require Linux kernel 6.7+ (Landlock ABI v4+). On older kernels, use `--best-effort` to ignore unsupported features.
+    </Warning>
+  </Step>
 
-## Next steps
+  <Step title="Use multiple filesystem rules">
+    Complex commands often need access to multiple paths:
+    
+    ```bash
+    sandboxec \
+      --fs rx:/usr \
+      --fs rx:/bin \
+      --fs rw:/tmp \
+      --fs rw:$PWD \
+      -- your-build-command
+    ```
+    
+    This grants:
+    - Read+execute to `/usr` and `/bin` for system binaries
+    - Read+write to `/tmp` for temporary files
+    - Read+write to current working directory (`$PWD`) for build output
+  </Step>
+</Steps>
 
-Now that you have your docs running, explore these key features:
+## Common Patterns
+
+### Sandbox third-party CLI tools
+
+```bash
+sandboxec \
+  --fs rx:/usr \
+  --fs rw:$PWD \
+  --net c:443 \
+  -- npm install
+```
+
+### Test untrusted scripts
+
+```bash
+sandboxec \
+  --fs rx:/bin \
+  --fs rx:/usr \
+  --fs rw:/tmp \
+  -- bash ./untrusted-script.sh
+```
+
+### AI agent command execution
+
+```bash
+sandboxec \
+  --fs rx:/usr \
+  --fs rw:/tmp \
+  --fs rw:/path/to/workspace \
+  --net c:443 \
+  -- agent-generated-command
+```
+
+## Next Steps
 
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Installation Guide" icon="download" href="/installation">
+    Complete installation instructions for all methods
+  </Card>
+  <Card title="Command Reference" icon="terminal" href="/usage/command-reference">
+    Learn about all available options and flags
+  </Card>
+  <Card title="Configuration" icon="gear" href="/usage/configuration">
+    Set up YAML configs for reusable policies
+  </Card>
+  <Card title="Security Model" icon="shield" href="/concepts/security-model">
+    Understand how sandboxec isolates commands
+  </Card>
 </CardGroup>
 
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
+## Troubleshooting
+
+<Accordion title="Command fails with 'permission denied'">
+  The command needs access to additional filesystem paths. Common missing dependencies:
+  
+  - System libraries: Add `--fs rx:/lib` and `--fs rx:/usr/lib`
+  - Shared objects: Add `--fs rx:/lib64`
+  - Configuration files: Add `--fs r:/etc`
+  
+  Or use `--unsafe-host-runtime` to automatically allow runtime dependencies (with security trade-offs).
+</Accordion>
+
+<Accordion title="Network restrictions don't work">
+  Network restrictions require Linux kernel 6.7+ (Landlock ABI v4+).
+  
+  Check your kernel version:
+  ```bash
+  uname -r
+  ```
+  
+  If your kernel is older, use `--best-effort` to run without network restrictions:
+  ```bash
+  sandboxec --best-effort --fs rx:/usr --net c:443 -- curl https://example.com
+  ```
+</Accordion>
+
+<Accordion title="'Landlock not supported' error">
+  Your kernel was built without Landlock support or is older than 5.13.
+  
+  Solutions:
+  - Update to a newer kernel (5.13+)
+  - Check if Landlock is enabled: `cat /sys/kernel/security/lsm`
+  - Use containers/VMs instead for older systems
+</Accordion>

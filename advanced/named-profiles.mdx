@@ -1,0 +1,362 @@
+---
+title: Named Profiles
+description: Use pre-configured profiles from the sandboxec/profiles repository
+---
+
+## Overview
+
+Named profiles provide pre-configured sandboxing rules for common use cases. Instead of manually specifying all filesystem and network rules, you can reference a curated profile from the [sandboxec/profiles](https://github.com/sandboxec/profiles) repository.
+
+<Info>
+Named profiles are especially useful for AI agents, development tools, and standardized security policies.
+</Info>
+
+## What are Named Profiles?
+
+Named profiles are YAML configuration files hosted in the [sandboxec/profiles](https://github.com/sandboxec/profiles) repository. They define:
+
+- Filesystem access rules
+- Network access rules
+- Landlock ABI settings
+- Best-effort and safety flags
+
+When you use the `--named-config` (or `-C`) flag, sandboxec automatically downloads and applies the specified profile.
+
+## How It Works
+
+### URL Mapping
+
+The `--named-config` flag maps profile names to GitHub URLs (internal/cli/run.go:242-253):
+
+```go
+const namedConfigBaseURL = "https://github.com/sandboxec/profiles/raw/refs/heads/based/"
+
+func namedConfigURL(value string) (string, error) {
+    name := strings.TrimSpace(value)
+    name = strings.TrimPrefix(name, "/")
+    name = strings.TrimSuffix(name, ".yaml")
+    name = strings.TrimSuffix(name, ".yml")
+    
+    return namedConfigBaseURL + name + ".yaml", nil
+}
+```
+
+<Steps>
+  <Step title="Profile name provided">
+    User runs: `sandboxec -C agents/claude -- command`
+  </Step>
+  
+  <Step title="URL constructed">
+    sandboxec builds URL:
+    ```
+    https://github.com/sandboxec/profiles/raw/refs/heads/based/agents/claude.yaml
+    ```
+  </Step>
+  
+  <Step title="Profile fetched and applied">
+    Configuration is downloaded and merged with CLI flags
+  </Step>
+</Steps>
+
+### Profile Resolution
+
+From internal/cli/run.go:77-83:
+
+```go
+if flagSet.Changed("named-config") {
+    resolvedConfigPath, resolveErr := namedConfigURL(namedConfig)
+    if resolveErr != nil {
+        return 1, resolveErr
+    }
+    configPath = resolvedConfigPath
+}
+```
+
+<Note>
+The `--config` and `--named-config` flags cannot be used together. Use one or the other.
+</Note>
+
+## Using Named Profiles
+
+### Basic Usage
+
+```bash
+sandboxec --named-config agents/claude -- claude --dangerously-skip-permissions
+```
+
+Short form:
+
+```bash
+sandboxec -C agents/claude -- claude --dangerously-skip-permissions
+```
+
+### Profile Naming Convention
+
+Profiles are organized by category in the repository:
+
+```
+sandboxec/profiles/
+├── agents/
+│   ├── claude.yaml
+│   └── openai.yaml
+├── build-tools/
+│   ├── npm.yaml
+│   └── python.yaml
+└── development/
+    └── default.yaml
+```
+
+Reference them using the path structure:
+
+- `agents/claude` → `agents/claude.yaml`
+- `build-tools/npm` → `build-tools/npm.yaml`
+- `development/default` → `development/default.yaml`
+
+<Tip>
+The `.yaml` extension is optional - sandboxec automatically appends it if missing.
+</Tip>
+
+## Example Profile
+
+A typical profile might look like this (from README:237-251):
+
+```yaml
+abi: 6
+best-effort: true
+ignore-if-missing: true
+restrict-scoped: false
+unsafe-host-runtime: false
+fs:
+  - rx:/bin
+  - rx:/usr
+  - rx:/lib
+  - rx:/usr/lib
+  - rw:/tmp
+net:
+  - c:443
+```
+
+### Profile Fields
+
+| Field | Description | Default |
+|-------|-------------|----------|
+| `abi` | Landlock ABI version (1-6) | System default |
+| `best-effort` | Continue if kernel lacks features | `false` |
+| `ignore-if-missing` | Don't fail on missing paths | `false` |
+| `restrict-scoped` | Enable IPC restrictions (ABI v6+) | `false` |
+| `unsafe-host-runtime` | Allow broader runtime access | `false` |
+| `fs` | Filesystem rules array | `[]` |
+| `net` | Network rules array | `[]` |
+| `mode` | Execution mode (`run` or `mcp`) | `run` |
+
+## Overriding Profile Settings
+
+CLI flags override profile values:
+
+```bash
+# Profile specifies net: [c:443]
+# This command adds c:80 instead
+sandboxec -C agents/claude --net c:80 -- command
+```
+
+<Warning>
+**Complete Replacement, Not Merge**
+
+When you provide `--fs` or `--net` flags, they completely replace the profile's rules. They do not merge.
+
+```bash
+# This REPLACES all fs rules from the profile
+sandboxec -C myprofile --fs rx:/usr -- command
+```
+</Warning>
+
+### Precedence Rules (from README:228-233)
+
+1. `--config` and `--named-config` are mutually exclusive
+2. CLI flags override config values for scalar options (abi, best-effort, etc.)
+3. `--fs` and `--net` replace config lists when provided
+4. If those flags are not provided, rules come from config
+
+## Common Profile Patterns
+
+### Minimal System Access
+
+```yaml
+# For commands that only need basic system binaries
+fs:
+  - rx:/usr/bin
+  - rx:/bin
+  - rw:/tmp
+```
+
+### Development Workspace
+
+```yaml
+# For build tools and development commands
+fs:
+  - rx:/usr
+  - rx:/lib
+  - rx:/usr/lib
+  - rw:/tmp
+  - rw:$PWD
+net:
+  - c:443
+  - c:80
+best-effort: true
+```
+
+### AI Agent Profile
+
+```yaml
+# For AI agents with broad but controlled access
+abi: 6
+best-effort: true
+ignore-if-missing: true
+fs:
+  - rx:/bin
+  - rx:/usr
+  - rx:/lib
+  - rx:/usr/lib
+  - rw:/tmp
+  - rw:/home/user/workspace
+net:
+  - c:443
+mode: mcp
+```
+
+### Strict Isolation
+
+```yaml
+# For untrusted code with minimal access
+abi: 6
+best-effort: false
+ignore-if-missing: false
+restrict-scoped: true
+fs:
+  - rx:/usr/bin/python3
+  - rw:/tmp/sandbox
+net: []
+```
+
+## Creating Custom Profiles
+
+### Local Profiles
+
+You don't need to use the profiles repository. Create local profiles with `--config`:
+
+<Steps>
+  <Step title="Create YAML file">
+    ```bash
+    mkdir -p ~/.config/sandboxec
+    cat > ~/.config/sandboxec/myprofile.yaml <<EOF
+    abi: 6
+    best-effort: true
+    fs:
+      - rx:/usr
+      - rw:$HOME/projects
+    net:
+      - c:443
+    EOF
+    ```
+  </Step>
+  
+  <Step title="Use with --config">
+    ```bash
+    sandboxec --config ~/.config/sandboxec/myprofile.yaml -- command
+    ```
+  </Step>
+</Steps>
+
+### Contributing Profiles
+
+To share your profile with the community:
+
+<Steps>
+  <Step title="Fork the profiles repository">
+    Visit [sandboxec/profiles](https://github.com/sandboxec/profiles)
+  </Step>
+  
+  <Step title="Add your profile">
+    Create a new YAML file in the appropriate category directory
+  </Step>
+  
+  <Step title="Submit a pull request">
+    Describe the use case and security considerations
+  </Step>
+</Steps>
+
+<Tip>
+Include clear documentation about what your profile allows and what it's designed for.
+</Tip>
+
+## Profiles Repository Structure
+
+The [sandboxec/profiles](https://github.com/sandboxec/profiles) repository organizes profiles by use case:
+
+```
+profiles/
+├── agents/          # AI agent configurations
+├── build-tools/     # Build system profiles
+├── development/     # General development
+├── languages/       # Language runtime profiles
+└── security/        # Security-focused profiles
+```
+
+<Info>
+Check the repository README for a complete list of available profiles and their descriptions.
+</Info>
+
+## Troubleshooting
+
+### Profile Not Found
+
+If you get a "profile not found" error:
+
+1. Verify the profile exists in the [profiles repository](https://github.com/sandboxec/profiles)
+2. Check your spelling and path structure
+3. Ensure you have network access to GitHub
+
+### Profile Download Issues
+
+If sandboxec cannot download the profile:
+
+- Check your internet connection
+- Verify GitHub is accessible
+- Try downloading the URL manually:
+  ```bash
+  curl -L "https://github.com/sandboxec/profiles/raw/refs/heads/based/agents/claude.yaml"
+  ```
+
+### Unexpected Behavior
+
+If a profile doesn't work as expected:
+
+<Steps>
+  <Step title="View the profile contents">
+    ```bash
+    curl -L "https://github.com/sandboxec/profiles/raw/refs/heads/based/PATH/TO/PROFILE.yaml"
+    ```
+  </Step>
+  
+  <Step title="Test with explicit flags">
+    Convert profile rules to CLI flags and test:
+    ```bash
+    sandboxec --fs rx:/usr --fs rw:/tmp -- command
+    ```
+  </Step>
+  
+  <Step title="Add verbosity or debugging">
+    Test the command first in run mode to see actual errors
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="MCP Integration" icon="plug" href="/advanced/mcp-integration">
+    Use profiles with MCP mode for AI agents
+  </Card>
+  <Card title="Best Practices" icon="shield" href="/advanced/best-practices">
+    Learn how to create effective sandboxing rules
+  </Card>
+</CardGroup>

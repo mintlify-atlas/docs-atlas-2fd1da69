@@ -48,7 +48,7 @@ func namedConfigURL(value string) (string, error) {
   
   <Step title="URL constructed">
     sandboxec builds URL:
-    ```
+    ```text
     https://github.com/sandboxec/profiles/raw/refs/heads/based/agents/claude.yaml
     ```
   </Step>
@@ -94,7 +94,7 @@ sandboxec -C agents/claude -- claude --dangerously-skip-permissions
 
 Profiles are organized by category in the repository:
 
-```
+```text
 sandboxec/profiles/
 ├── agents/
 │   ├── claude.yaml
@@ -108,9 +108,11 @@ sandboxec/profiles/
 
 Reference them using the path structure:
 
-- `agents/claude` → `agents/claude.yaml`
-- `build-tools/npm` → `build-tools/npm.yaml`
-- `development/default` → `development/default.yaml`
+```text
+agents/claude → agents/claude.yaml
+build-tools/npm → build-tools/npm.yaml
+development/default → development/default.yaml
+```
 
 <Tip>
 The `.yaml` extension is optional - sandboxec automatically appends it if missing.
@@ -293,7 +295,7 @@ Include clear documentation about what your profile allows and what it's designe
 
 The [sandboxec/profiles](https://github.com/sandboxec/profiles) repository organizes profiles by use case:
 
-```
+```text
 profiles/
 ├── agents/          # AI agent configurations
 ├── build-tools/     # Build system profiles

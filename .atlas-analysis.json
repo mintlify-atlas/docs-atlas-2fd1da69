@@ -1,0 +1,77 @@
+{
+  "projectType": "cli-tool",
+  "projectName": "sandboxec",
+  "projectDescription": "A lightweight command sandbox for Linux, secure-by-default, built on Landlock.",
+  "theme": "aspen",
+  "primaryColor": "#0F4C81",
+  "lightColor": "#3B82F6",
+  "darkColor": "#1E3A8A",
+  "navigation": {
+    "groups": [
+      {
+        "group": "Get Started",
+        "pages": [
+          "introduction",
+          "quickstart",
+          "installation"
+        ]
+      },
+      {
+        "group": "Core Concepts",
+        "pages": [
+          "concepts/security-model",
+          "concepts/rule-system",
+          "concepts/kernel-compatibility"
+        ]
+      },
+      {
+        "group": "Usage Guide",
+        "pages": [
+          "usage/command-reference",
+          "usage/filesystem-rules",
+          "usage/network-rules",
+          "usage/configuration",
+          "usage/examples"
+        ]
+      },
+      {
+        "group": "Advanced",
+        "pages": [
+          "advanced/mcp-integration",
+          "advanced/named-profiles",
+          "advanced/best-practices"
+        ]
+      },
+      {
+        "group": "Reference",
+        "pages": [
+          "reference/cli-options",
+          "reference/rule-format",
+          "reference/exit-codes",
+          "reference/troubleshooting"
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Landlock-based process sandboxing",
+    "Filesystem access control (read, write, execute)",
+    "Network access control (TCP bind/connect)",
+    "YAML configuration with named profiles",
+    "MCP (Model Context Protocol) integration",
+    "Best-effort mode for kernel compatibility",
+    "Zero daemon, no root required"
+  ],
+  "publicApiSurface": [
+    "--fs / -f (filesystem rules)",
+    "--net / -n (network rules)",
+    "--config / -c (config file)",
+    "--named-config / -C (named profile)",
+    "--mode / -m (run|mcp)",
+    "--abi (Landlock ABI version)",
+    "--best-effort (graceful degradation)",
+    "--ignore-if-missing (skip missing paths)",
+    "--restrict-scoped (IPC restrictions)",
+    "--unsafe-host-runtime (runtime access)"
+  ]
+}
